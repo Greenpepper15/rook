@@ -13388,6 +13388,14 @@ spec:
                       description: The name of the secret that stores custom ca-bundle with root and intermediate certificates.
                       nullable: true
                       type: string
+                    cephxLeastPrivilege:
+                      description: |-
+                        CephxLeastPrivilege, when true, scopes the RGW daemon's cephx OSD capabilities to exactly
+                        the RADOS pools (and namespaces) referenced by this object store's zone configuration,
+                        instead of the cluster-wide "osd allow rwx" granted by default. If false or unset, the
+                        daemon keeps the default cluster-wide OSD capabilities. Setting this back to false restores
+                        the default capabilities.
+                      type: boolean
                     dashboardEnabled:
                       description: Whether rgw dashboard is enabled for the rgw daemon. If not set, the rgw dashboard will be enabled.
                       nullable: true

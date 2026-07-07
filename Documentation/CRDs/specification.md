@@ -8409,6 +8409,22 @@ replication data.</p>
 </tr>
 <tr>
 <td>
+<code>cephxLeastPrivilege</code><br/>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>CephxLeastPrivilege, when true, scopes the RGW daemon&rsquo;s cephx OSD capabilities to exactly
+the RADOS pools (and namespaces) referenced by this object store&rsquo;s zone configuration,
+instead of the cluster-wide &ldquo;osd allow rwx&rdquo; granted by default. If false or unset, the
+daemon keeps the default cluster-wide OSD capabilities. Setting this back to false restores
+the default capabilities.</p>
+</td>
+</tr>
+<tr>
+<td>
 <code>annotations</code><br/>
 <em>
 <a href="#ceph.rook.io/v1.Annotations">

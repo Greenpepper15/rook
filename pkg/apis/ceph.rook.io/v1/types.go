@@ -2009,6 +2009,14 @@ type GatewaySpec struct {
 	// +optional
 	DisableMultisiteSyncTraffic bool `json:"disableMultisiteSyncTraffic,omitempty"`
 
+	// CephxLeastPrivilege, when true, scopes the RGW daemon's cephx OSD capabilities to exactly
+	// the RADOS pools (and namespaces) referenced by this object store's zone configuration,
+	// instead of the cluster-wide "osd allow rwx" granted by default. If false or unset, the
+	// daemon keeps the default cluster-wide OSD capabilities. Setting this back to false restores
+	// the default capabilities.
+	// +optional
+	CephxLeastPrivilege bool `json:"cephxLeastPrivilege,omitempty"`
+
 	// The annotations-related configuration to add/set on each Pod related object.
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +nullable

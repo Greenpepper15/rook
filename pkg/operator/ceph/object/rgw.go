@@ -56,6 +56,10 @@ type clusterConfig struct {
 	DataPathMap           *config.DataPathMap
 	client                client.Client
 	shouldRotateCephxKeys bool
+	// cephxCapsStatus reports the outcome of spec.gateway.cephxLeastPrivilege for the store's
+	// status info ("scoped", or "broad: <reason>" when scoping was requested but not applied).
+	// Empty when the feature is disabled.
+	cephxCapsStatus string
 }
 
 type rgwConfig struct {
@@ -68,6 +72,11 @@ type rgwConfig struct {
 	Auth           cephv1.AuthSpec
 	KeystoneSecret *v1.Secret
 	Protocols      cephv1.ProtocolSpec
+
+	// ScopedOSDCap, when non-empty, is the least-privilege OSD cap string for the daemon's cephx
+	// user (spec.gateway.cephxLeastPrivilege), enumerated from the store's zone configuration.
+	// Empty means the default cluster-wide "allow rwx".
+	ScopedOSDCap string
 }
 
 var updateDeploymentAndWait = mon.UpdateCephDeploymentAndWait
@@ -120,6 +129,36 @@ func (c *clusterConfig) startRGWPods(realmName, zoneGroupName, zoneName string, 
 		return nil
 	}
 
+	// Least-privilege cephx caps (spec.gateway.cephxLeastPrivilege): enumerate the OSD cap grants
+	// from the live zone config so they match exactly the pools the daemon uses. This runs after
+	// configureObjectStore, so the zone config is final for this reconcile.
+	scopedOSDCap := ""
+	c.cephxCapsStatus = ""
+	if c.store.Spec.Gateway.CephxLeastPrivilege {
+		if reason := poolAffectingConfigReason(&c.store.Spec.Gateway, c.clusterSpec); reason != "" {
+			// A config-level override can point the daemon at pools outside the zone config, which
+			// scoped caps would not cover. Keep broad caps rather than break the daemon.
+			c.cephxCapsStatus = "broad: " + reason
+			log.NamedWarning(nsName, logger, "cephxLeastPrivilege is set for object store %q but broad osd caps are kept: %s", c.store.Name, reason)
+		} else {
+			objCtx := NewContext(c.context, c.clusterInfo, c.store.Name)
+			objCtx.Realm = realmName
+			objCtx.ZoneGroup = zoneGroupName
+			objCtx.Zone = zoneName
+			zoneJSON, err := getZoneJSON(objCtx)
+			if err != nil {
+				// Do not fall back to broad caps here: widening an already-scoped daemon on a
+				// transient error would trigger a pointless re-cap and pod restart. Retry instead.
+				return errors.Wrapf(err, "failed to get zone config to build least-privilege osd caps for object store %q", c.store.Name)
+			}
+			scopedOSDCap, err = scopedRGWDaemonOSDCap(zoneJSON)
+			if err != nil {
+				return errors.Wrapf(err, "failed to build least-privilege osd caps for object store %q", c.store.Name)
+			}
+			c.cephxCapsStatus = "scoped"
+		}
+	}
+
 	// start a new deployment and scale up
 	// We force a single deployment and later set the deployment replica to the "instances" value
 	desiredRgwInstances := 1
@@ -142,6 +181,7 @@ func (c *clusterConfig) startRGWPods(realmName, zoneGroupName, zoneName string, 
 			Auth:           c.store.Spec.Auth,
 			Protocols:      c.store.Spec.Protocols,
 			KeystoneSecret: keystoneSecret,
+			ScopedOSDCap:   scopedOSDCap,
 		}
 
 		// We set the owner reference of the Secret to the Object controller instead of the replicaset

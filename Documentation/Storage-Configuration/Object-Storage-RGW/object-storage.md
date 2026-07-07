@@ -191,6 +191,10 @@ Additional object stores can be created based on the same shared pools by simply
 `name` of the CephObjectStore. In the example manifests folder, two object store examples are
 provided: `object-a.yaml` and `object-b.yaml`.
 
+The RADOS namespace separation between the object stores can additionally be enforced at the CephX
+level by scoping each gateway's OSD capabilities to its own namespaces with
+[`gateway.cephxLeastPrivilege`](../../CRDs/Object-Storage/ceph-object-store-crd.md#cephx-least-privilege).
+
 To consume the object store, continue below in the section to [Create a bucket](#create-a-bucket).
 Modify the default example object store name from `my-store` to the alternate name of the object store
 such as `store-a` in this example.

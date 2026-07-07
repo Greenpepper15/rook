@@ -318,7 +318,15 @@ func (r *ReconcileCephObjectStore) reconcile(request reconcile.Request) (reconci
 		}
 	} else {
 		var nilCephxStatus *cephv1.CephxStatus = nil // leave cephx status as-is
-		err := updateStatus(r.opManagerContext, k8sutil.ObservedGenerationNotAvailable, replicaCountNotAvailable, r.client, request.NamespacedName, cephv1.ConditionProgressing, buildStatusInfo(cephObjectStore), nilCephxStatus)
+		// Carry the cephx least-privilege outcome (recomputed authoritatively on the Ready update
+		// below) across this intermediate Progressing update so it does not flap on every reconcile.
+		progressingInfo := buildStatusInfo(cephObjectStore)
+		if cephObjectStore.Status != nil {
+			if v, ok := cephObjectStore.Status.Info["cephxLeastPrivilege"]; ok {
+				progressingInfo["cephxLeastPrivilege"] = v
+			}
+		}
+		err := updateStatus(r.opManagerContext, k8sutil.ObservedGenerationNotAvailable, replicaCountNotAvailable, r.client, request.NamespacedName, cephv1.ConditionProgressing, progressingInfo, nilCephxStatus)
 		if err != nil {
 			return reconcile.Result{}, *cephObjectStore, errors.Wrapf(err, "failed to initialize cephx status for cephObjectStore %q", request.NamespacedName)
 		}
@@ -489,7 +497,7 @@ func (r *ReconcileCephObjectStore) reconcile(request reconcile.Request) (reconci
 	}
 
 	// CREATE/UPDATE
-	reconcileResult, err := r.reconcileCreateObjectStore(cephObjectStore, request.NamespacedName, cfg)
+	reconcileResult, err := r.reconcileCreateObjectStore(cephObjectStore, request.NamespacedName, &cfg)
 	if err != nil && kerrors.IsNotFound(err) {
 		// A not found error may mean ceph is still initializing, but there might be some other error
 		// so we log the error and requeue
@@ -510,7 +518,11 @@ func (r *ReconcileCephObjectStore) reconcile(request reconcile.Request) (reconci
 	// update ObservedGeneration in status at the end of reconcile
 	// Set Progressing status, we are done reconciling, the health check go routine will update the status
 	cephxStatus := keyring.UpdatedCephxStatus(shouldRotateCephxKeys, cephCluster.Spec.Security.CephX.Daemon, r.clusterInfo.CephVersion, cephObjectStore.Status.Cephx.Daemon)
-	err = updateStatus(r.opManagerContext, observedGeneration, cephObjectStore.Spec.Gateway.Instances, r.client, request.NamespacedName, cephv1.ConditionReady, buildStatusInfo(cephObjectStore), &cephxStatus)
+	statusInfo := buildStatusInfo(cephObjectStore)
+	if cfg.cephxCapsStatus != "" {
+		statusInfo["cephxLeastPrivilege"] = cfg.cephxCapsStatus
+	}
+	err = updateStatus(r.opManagerContext, observedGeneration, cephObjectStore.Spec.Gateway.Instances, r.client, request.NamespacedName, cephv1.ConditionReady, statusInfo, &cephxStatus)
 	if err != nil {
 		return reconcile.Result{}, *cephObjectStore, errors.Wrapf(err, "failed to set final status for cephObjectStore %q", request.NamespacedName)
 	}
@@ -520,7 +532,7 @@ func (r *ReconcileCephObjectStore) reconcile(request reconcile.Request) (reconci
 	return reconcile.Result{}, *cephObjectStore, nil
 }
 
-func (r *ReconcileCephObjectStore) reconcileCreateObjectStore(cephObjectStore *cephv1.CephObjectStore, namespacedName types.NamespacedName, cfg clusterConfig) (reconcile.Result, error) {
+func (r *ReconcileCephObjectStore) reconcileCreateObjectStore(cephObjectStore *cephv1.CephObjectStore, namespacedName types.NamespacedName, cfg *clusterConfig) (reconcile.Result, error) {
 	objContext, err := NewMultisiteContext(r.context, r.clusterInfo, cephObjectStore)
 	if err != nil {
 		return r.setFailedStatus(k8sutil.ObservedGenerationNotAvailable, namespacedName, "failed to setup object store context", err)

@@ -58,6 +58,9 @@ spec:
     # securePort: 443
     # The number of pods in the rgw deployment
     instances: 1
+    # Scope the RGW daemon's cephx OSD caps to exactly the pools/namespaces its zone references,
+    # instead of the default cluster-wide "osd allow rwx". Enabling or disabling restarts the RGWs.
+    # cephxLeastPrivilege: true
     # The affinity rules to apply to the rgw deployment.
     placement:
       podAntiAffinity:

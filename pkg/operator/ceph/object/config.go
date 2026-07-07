@@ -38,8 +38,8 @@ const (
 	keyringTemplate = `
 [%s]
 key = %s
-caps mon = "allow rw"
-caps osd = "allow rwx"
+caps mon = "%s"
+caps osd = "%s"
 `
 
 	caBundleVolumeName              = "rook-ceph-custom-ca-bundle"
@@ -163,8 +163,15 @@ func generateCephXUser(name string) string {
 func (c *clusterConfig) generateKeyring(rgwConfig *rgwConfig) (string, error) {
 	nsName := controller.NsName(c.clusterInfo.Namespace, c.store.Name)
 	user := generateCephXUser(rgwConfig.ResourceName)
-	/* TODO: this says `osd allow rwx` while template says `osd allow *`; which is correct? */
-	access := []string{"osd", "allow rwx", "mon", "allow rw"}
+	monCap := "allow rw"
+	osdCap := "allow rwx"
+	if rgwConfig.ScopedOSDCap != "" {
+		// spec.gateway.cephxLeastPrivilege: caps scoped to exactly the pools referenced by this
+		// store's zone config (computed in startRGWPods). The cap string is byte-stable across
+		// reconciles so `auth get-or-create-key` stays a no-op in steady state.
+		osdCap = rgwConfig.ScopedOSDCap
+	}
+	access := []string{"osd", osdCap, "mon", monCap}
 	s := keyring.GetSecretStore(c.context, c.clusterInfo, c.ownerInfo)
 
 	key, err := s.GenerateKey(user, access)
@@ -182,7 +189,7 @@ func (c *clusterConfig) generateKeyring(rgwConfig *rgwConfig) (string, error) {
 		}
 	}
 
-	keyring := fmt.Sprintf(keyringTemplate, user, key)
+	keyring := fmt.Sprintf(keyringTemplate, user, key, monCap, osdCap)
 	return s.CreateOrUpdate(rgwConfig.ResourceName, keyring)
 }
 

@@ -213,6 +213,10 @@ The gateway settings correspond to the RGW daemon settings.
     [enabling TLS](../../Storage-Configuration/Object-Storage-RGW/object-storage.md#enable-tls)
     documentation for more details.
 * `instances`: The number of pods that will be started to load balance this object store.
+* `cephxLeastPrivilege`: Whether the RGW daemon runs with least-privilege CephX OSD capabilities,
+    scoped to exactly the RADOS pools (and RADOS namespaces) referenced by this object store's zone
+    configuration, instead of the default cluster-wide `osd allow rwx`. Defaults to `false`. See
+    [CephX least privilege](#cephx-least-privilege) below.
 * `externalRgwEndpoints`: A list of IP addresses to connect to external existing Rados Gateways
     (works with external mode). This setting will be ignored if the `CephCluster` does not have
     `external` spec enabled. Refer to the [external cluster section](../Cluster/ceph-cluster-crd.md#external-cluster)
@@ -266,6 +270,32 @@ Once enabled, logs can be accessed in RGW pod `ops-log` sidecar containers. For 
 ```sh
 kubectl --namespace rook-ceph logs rook-ceph-rgw-my-store-a-59d48474d8-jv7ps --container ops-log
 ```
+
+### CephX least privilege
+
+By default, RGW daemons run with cluster-wide CephX OSD capabilities (`osd allow rwx`), allowing
+the daemon to read and write any RADOS pool in the Ceph cluster. Setting
+`gateway.cephxLeastPrivilege: true` scopes the daemon's OSD capabilities to exactly the pools (and
+RADOS namespaces) referenced by the object store's zone configuration, plus the shared `.rgw.root`
+pool. This applies to dedicated-pool,
+[shared-pool](../../Storage-Configuration/Object-Storage-RGW/object-storage.md#shared-pools), and
+[multisite](../../Storage-Configuration/Object-Storage-RGW/ceph-object-multisite.md) object stores.
+
+* Enabling or disabling the setting re-caps the daemon's CephX user and triggers one rolling
+    restart of the RGW pods. Disabling restores the default cluster-wide capabilities.
+* The capabilities follow the zone configuration: when pool placements or storage classes are
+    added to the object store spec, the capabilities are updated on the same reconcile.
+* If `rgwConfig`, `rgwConfigFromSecret`, `rgwCommandFlags`, or the CephCluster `cephConfig`
+    contain options that may redirect RGW pools (for example `rgw_zone_root_pool`), Rook keeps the
+    default broad capabilities and reports the reason in the CephObjectStore
+    `status.info["cephxLeastPrivilege"]`.
+* For multisite setups, set the field on each CephObjectStore that references the zone.
+* The setting has no effect on external-mode object stores, whose RGW CephX users are not managed
+    by Rook.
+* Zone configuration changes made out-of-band with `radosgw-admin` (for example `zone placement
+    add`) are only reflected in the capabilities on the next operator reconcile of the object
+    store. Until then, S3 operations against such a placement fail with permission errors.
+* The daemon's `mon` capabilities are unchanged (`allow rw`).
 
 ## Zone Settings
 

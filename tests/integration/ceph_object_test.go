@@ -175,6 +175,87 @@ func runObjectE2ETest(helper *clients.TestClient, k8sh *utils.K8sHelper, install
 		}
 	})
 
+	// Enable least-privilege cephx caps on the store and verify the daemon's osd caps get scoped
+	// to exactly the pools referenced by the zone config. The store keeps running with the scoped
+	// caps, so the rest of the suite proves S3 operations work under them.
+	s.T().Run("least-privilege cephx caps are scoped to the zone pools", func(t *testing.T) {
+		ctx := context.TODO()
+		store, err := k8sh.RookClientset.CephV1().CephObjectStores(namespace).Get(ctx, storeName, metav1.GetOptions{})
+		require.NoError(t, err)
+		store.Spec.Gateway.CephxLeastPrivilege = true
+		_, err = k8sh.RookClientset.CephV1().CephObjectStores(namespace).Update(ctx, store, metav1.UpdateOptions{})
+		require.NoError(t, err)
+
+		rgwUser := "client.rgw." + strings.ReplaceAll(storeName, "-", ".") + ".a"
+		osdCaps := ""
+		for i := 0; i < 40; i++ {
+			output, err := installer.Execute("ceph", []string{"auth", "get", rgwUser}, namespace)
+			if err == nil {
+				for _, line := range strings.Split(output, "\n") {
+					line = strings.TrimSpace(line)
+					if strings.HasPrefix(line, `caps osd = "`) {
+						osdCaps = strings.TrimSuffix(strings.TrimPrefix(line, `caps osd = "`), `"`)
+					}
+				}
+			}
+			if osdCaps != "" && osdCaps != "allow rwx" {
+				break
+			}
+			logger.Infof("(%d) waiting for scoped osd caps on %q (current: %q); sleeping 5 seconds ...", i, rgwUser, osdCaps)
+			time.Sleep(5 * time.Second)
+		}
+		require.NotEmpty(t, osdCaps)
+		require.NotEqual(t, "allow rwx", osdCaps, "osd caps were not scoped")
+
+		assert.NotContains(t, osdCaps, "*")
+		assert.Contains(t, osdCaps, "pool=.rgw.root")
+		for _, clause := range strings.Split(osdCaps, ", ") {
+			assert.True(t, strings.HasPrefix(clause, "allow rwx pool="), "unexpected osd cap clause %q", clause)
+		}
+
+		// every pool[:namespace] referenced by the zone config must be granted
+		output, err := installer.Execute("radosgw-admin",
+			[]string{"zone", "get", fmt.Sprintf("--rgw-zone=%s", storeName), fmt.Sprintf("--rgw-realm=%s", storeName)}, namespace)
+		require.NoError(t, err, "failed to get zone config; output: %s", output)
+		var zoneConfig map[string]interface{}
+		require.NoError(t, json.Unmarshal([]byte(output), &zoneConfig))
+		for field, val := range zoneConfig {
+			strVal, ok := val.(string)
+			if !ok || strVal == "" || (!strings.HasSuffix(field, "_pool") && field != "domain_root") {
+				continue
+			}
+			pool, radosNamespace, _ := strings.Cut(strVal, ":")
+			expected := "allow rwx pool=" + pool
+			if radosNamespace != "" {
+				expected += " namespace=" + radosNamespace
+			}
+			assert.Contains(t, osdCaps, expected, "zone pool field %q not covered by osd caps", field)
+		}
+
+		// the object store status reports the scoped state
+		for i := 0; i < 12; i++ {
+			store, err = k8sh.RookClientset.CephV1().CephObjectStores(namespace).Get(ctx, storeName, metav1.GetOptions{})
+			require.NoError(t, err)
+			if store.Status != nil && store.Status.Info["cephxLeastPrivilege"] == "scoped" {
+				break
+			}
+			logger.Infof("(%d) waiting for cephxLeastPrivilege status on %q; sleeping 5 seconds ...", i, storeName)
+			time.Sleep(5 * time.Second)
+		}
+		assert.Equal(t, "scoped", store.Status.Info["cephxLeastPrivilege"])
+
+		// wait for the rolling restart triggered by the keyring update to settle before moving on
+		deployName := RgwServiceName(storeName) + "-a"
+		for i := 0; i < 24; i++ {
+			d, err := k8sh.Clientset.AppsV1().Deployments(namespace).Get(ctx, deployName, metav1.GetOptions{})
+			if err == nil && d.Status.UnavailableReplicas == 0 && d.Status.ReadyReplicas >= 1 {
+				break
+			}
+			logger.Infof("(%d) waiting for rgw deployment %q to settle after re-cap; sleeping 5 seconds ...", i, deployName)
+			time.Sleep(5 * time.Second)
+		}
+	})
+
 	// test that a second object store can be created (and deleted) while the first exists
 	s.T().Run("run a second object store", func(t *testing.T) {
 		otherStoreName := "other-" + storeName

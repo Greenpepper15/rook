@@ -187,6 +187,11 @@ object-multisite-pull-realm.yaml (with changes) in the [examples](https://github
 kubectl create -f object-multisite-pull-realm.yaml
 ```
 
+!!! note
+    To run multisite gateways with least-privilege CephX OSD capabilities, set
+    [`gateway.cephxLeastPrivilege`](../../CRDs/Object-Storage/ceph-object-store-crd.md#cephx-least-privilege)
+    on each CephObjectStore that refers to the zone.
+
 ## Scaling a Multisite
 
 Scaling the number of gateways that run the synchronization thread to 2 or more can increase the latency of the
