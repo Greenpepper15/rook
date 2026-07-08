@@ -449,6 +449,13 @@ func (c *clusterConfig) makeDaemonContainer(rgwConfig *rgwConfig) (v1.Container,
 		WorkingDir:      cephconfig.VarLogCephDir,
 	}
 
+	if rgwConfig.RootPoolNamespace != "" {
+		// isolatedRootPool: the daemon must learn the RADOS namespace of its topology records
+		// from its own command line — CLI args outrank the mon config store, and the pod
+		// template persists across restarts and reschedules with no dependency on `.rgw.root`.
+		container.Args = append(container.Args, rootPoolArgs(rgwConfig.RootPoolNamespace)...)
+	}
+
 	// If the startup probe is enabled
 	container = cephconfig.ConfigureStartupProbe(container, c.store.Spec.HealthCheck.StartupProbe)
 	// If the readiness probe is enabled

@@ -56,6 +56,9 @@ type clusterConfig struct {
 	DataPathMap           *config.DataPathMap
 	client                client.Client
 	shouldRotateCephxKeys bool
+	// rootPoolNamespace, when non-empty, is the RADOS namespace within `.rgw.root` holding the
+	// store's topology records (spec isolatedRootPool); passed to the RGW daemons' command line.
+	rootPoolNamespace string
 }
 
 type rgwConfig struct {
@@ -68,6 +71,11 @@ type rgwConfig struct {
 	Auth           cephv1.AuthSpec
 	KeystoneSecret *v1.Secret
 	Protocols      cephv1.ProtocolSpec
+
+	// RootPoolNamespace, when non-empty, is the RADOS namespace within `.rgw.root` holding the
+	// store's topology records (spec isolatedRootPool). The daemon learns it from its own
+	// command line so a restarted or rescheduled pod always resolves the same records.
+	RootPoolNamespace string
 }
 
 var updateDeploymentAndWait = mon.UpdateCephDeploymentAndWait
@@ -134,14 +142,15 @@ func (c *clusterConfig) startRGWPods(realmName, zoneGroupName, zoneName string, 
 		resourceName := fmt.Sprintf("%s-%s-%s", AppName, c.store.Name, daemonLetterID)
 
 		rgwConfig := &rgwConfig{
-			ResourceName:   resourceName,
-			DaemonID:       daemonName,
-			Realm:          realmName,
-			ZoneGroup:      zoneGroupName,
-			Zone:           zoneName,
-			Auth:           c.store.Spec.Auth,
-			Protocols:      c.store.Spec.Protocols,
-			KeystoneSecret: keystoneSecret,
+			ResourceName:      resourceName,
+			DaemonID:          daemonName,
+			Realm:             realmName,
+			ZoneGroup:         zoneGroupName,
+			Zone:              zoneName,
+			Auth:              c.store.Spec.Auth,
+			Protocols:         c.store.Spec.Protocols,
+			KeystoneSecret:    keystoneSecret,
+			RootPoolNamespace: c.rootPoolNamespace,
 		}
 
 		// We set the owner reference of the Secret to the Object controller instead of the replicaset

@@ -821,6 +821,50 @@ func TestMakeRGWPodSpec(t *testing.T) {
 	}
 }
 
+func TestMakeDaemonContainerRootPoolFlags(t *testing.T) {
+	store := simpleStore()
+	info := clienttest.CreateTestClusterInfo(1)
+	info.Namespace = store.Namespace
+	data := cephconfig.NewStatelessDaemonDataPathMap(cephconfig.RgwType, "default", "rook-ceph", "/var/lib/rook/")
+	executor := &exectest.MockExecutor{
+		MockExecuteCommandWithOutput: func(command string, args ...string) (string, error) {
+			return `{"id":"test-id"}`, nil
+		},
+		MockExecuteCommandWithTimeout: func(timeout time.Duration, command string, args ...string) (string, error) {
+			return `{"id":"test-id"}`, nil
+		},
+	}
+	c := &clusterConfig{
+		clusterInfo: info,
+		store:       store,
+		context:     &clusterd.Context{Clientset: test.New(t, 3), Executor: executor},
+		rookVersion: "rook/rook:myversion",
+		clusterSpec: &cephv1.ClusterSpec{CephVersion: cephv1.CephVersionSpec{Image: "quay.io/ceph/ceph:v19.3"}},
+		DataPathMap: data,
+	}
+	rgwConfig := &rgwConfig{
+		ResourceName: fmt.Sprintf("%s-%s", AppName, c.store.Name),
+		DaemonID:     "default",
+	}
+
+	t.Run("no isolatedRootPool - no root pool flags", func(t *testing.T) {
+		rgwContainer, err := c.makeDaemonContainer(rgwConfig)
+		assert.NoError(t, err)
+		for _, arg := range rgwContainer.Args {
+			assert.NotContains(t, arg, "root-pool")
+		}
+	})
+
+	t.Run("isolatedRootPool - flags for all four topology record types", func(t *testing.T) {
+		rgwConfig.RootPoolNamespace = "my-store"
+		rgwContainer, err := c.makeDaemonContainer(rgwConfig)
+		assert.NoError(t, err)
+		for _, flag := range rootPoolArgs("my-store") {
+			assert.Contains(t, rgwContainer.Args, flag)
+		}
+	})
+}
+
 func TestAWSServerSideEncryption(t *testing.T) {
 	ctx := context.TODO()
 	// Placeholder

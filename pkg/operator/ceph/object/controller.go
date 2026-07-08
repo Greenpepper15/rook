@@ -589,7 +589,7 @@ func (r *ReconcileCephObjectStore) reconcileCreateObjectStore(cephObjectStore *c
 
 		// Reconcile Ceph Zone if Multisite to ensure it exists, or else requeue the request
 		if cephObjectStore.Spec.IsMultisite() {
-			reconcileResponse, err := r.retrieveMultisiteZone(cephObjectStore, zoneGroupName, realmName)
+			reconcileResponse, err := r.retrieveMultisiteZone(objContext, cephObjectStore, zoneGroupName, realmName)
 			if err != nil {
 				return reconcileResponse, err
 			}
@@ -614,6 +614,10 @@ func (r *ReconcileCephObjectStore) reconcileCreateObjectStore(cephObjectStore *c
 		err = ValidateObjectStorePoolsConfig(cephObjectStore.Spec.MetadataPool, cephObjectStore.Spec.DataPool, cephObjectStore.Spec.SharedPools)
 		if err != nil {
 			return r.setFailedStatus(k8sutil.ObservedGenerationNotAvailable, namespacedName, "invalid pool configuration", err)
+		}
+		err = validateIsolatedRootPool(&cephObjectStore.Spec)
+		if err != nil {
+			return r.setFailedStatus(k8sutil.ObservedGenerationNotAvailable, namespacedName, "invalid isolatedRootPool configuration", err)
 		}
 		// Reconcile Pool Creation
 		if !cephObjectStore.Spec.IsMultisite() {
@@ -646,6 +650,7 @@ func (r *ReconcileCephObjectStore) reconcileCreateObjectStore(cephObjectStore *c
 		}
 
 		// Create or Update store
+		cfg.rootPoolNamespace = objContext.RootPoolNamespace
 		err = cfg.createOrUpdateStore(realmName, zoneGroupName, zoneName, keystoneSecret)
 		if err != nil {
 			return reconcile.Result{}, errors.Wrapf(err, "failed to create object store %q", cephObjectStore.Name)
@@ -661,12 +666,13 @@ func (r *ReconcileCephObjectStore) reconcileCreateObjectStore(cephObjectStore *c
 	return reconcile.Result{}, nil
 }
 
-func (r *ReconcileCephObjectStore) retrieveMultisiteZone(store *cephv1.CephObjectStore, zoneGroupName string, realmName string) (reconcile.Result, error) {
+// retrieveMultisiteZone checks the zone exists in Ceph via the given multisite-aware context (the
+// context carries the store's `.rgw.root` namespace when isolatedRootPool is set on the realm)
+func (r *ReconcileCephObjectStore) retrieveMultisiteZone(objContext *Context, store *cephv1.CephObjectStore, zoneGroupName string, realmName string) (reconcile.Result, error) {
 	nsName := opcontroller.NsName(store.Namespace, store.Name)
 	realmArg := fmt.Sprintf("--rgw-realm=%s", realmName)
 	zoneGroupArg := fmt.Sprintf("--rgw-zonegroup=%s", zoneGroupName)
 	zoneArg := fmt.Sprintf("--rgw-zone=%s", store.Spec.Zone.Name)
-	objContext := NewContext(r.context, r.clusterInfo, store.Name)
 
 	_, err := RunAdminCommandNoMultisite(objContext, true, "zone", "get", realmArg, zoneGroupArg, zoneArg)
 	if err != nil {
