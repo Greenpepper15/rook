@@ -19,6 +19,9 @@ package realm
 
 import (
 	"context"
+	"errors"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -26,6 +29,7 @@ import (
 	rookclient "github.com/rook/rook/pkg/client/clientset/versioned/fake"
 	"github.com/rook/rook/pkg/clusterd"
 	cephclient "github.com/rook/rook/pkg/daemon/ceph/client"
+	"github.com/rook/rook/pkg/operator/ceph/object"
 	"github.com/rook/rook/pkg/operator/k8sutil"
 	"github.com/rook/rook/pkg/operator/test"
 	exectest "github.com/rook/rook/pkg/util/exec/test"
@@ -37,6 +41,7 @@ import (
 	k8sfake "k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/events"
+	kexec "k8s.io/client-go/util/exec"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
@@ -206,6 +211,94 @@ func TestCreateCephRealm(t *testing.T) {
 	res, err := r.createCephRealm(objectRealm)
 	assert.NoError(t, err)
 	assert.False(t, res.Requeue)
+}
+
+func TestCreateCephRealmIsolatedRootPool(t *testing.T) {
+	hasRootPoolFlags := func(args []string) bool {
+		for _, arg := range args {
+			if strings.HasPrefix(arg, "--rgw-realm-root-pool=") {
+				return true
+			}
+		}
+		return false
+	}
+	// mirrors the error shape of the remote (proxied) executor, which both exec.ExitStatus and
+	// exec.ExtractExitCode understand
+	enoent := func() error {
+		return kexec.CodeExitError{Err: errors.New("command terminated with exit code 2"), Code: int(syscall.ENOENT)}
+	}
+
+	t.Run("realm is created in its namespace after checking the shared root", func(t *testing.T) {
+		r, objectRealm := getObjectRealmAndReconcileObjectRealm(t)
+		objectRealm.Spec.IsolatedRootPool = true
+
+		var createArgs []string
+		sawSharedRootCheck := false
+		r.context.Executor = &exectest.MockExecutor{
+			MockExecuteCommandWithTimeout: func(timeout time.Duration, command string, args ...string) (string, error) {
+				if args[0] == "realm" && args[1] == "get" {
+					if !hasRootPoolFlags(args) {
+						sawSharedRootCheck = true
+					}
+					return "", enoent()
+				}
+				if args[0] == "realm" && args[1] == "create" {
+					createArgs = args
+					return realmGetJSON, nil
+				}
+				return "", nil
+			},
+		}
+
+		res, err := r.createCephRealm(objectRealm)
+		assert.NoError(t, err)
+		assert.False(t, res.Requeue)
+		assert.True(t, sawSharedRootCheck)
+		for _, flag := range []string{
+			"--rgw-realm-root-pool=.rgw.root:" + objectRealm.Name,
+			"--rgw-zonegroup-root-pool=.rgw.root:" + objectRealm.Name,
+			"--rgw-zone-root-pool=.rgw.root:" + objectRealm.Name,
+			"--rgw-period-root-pool=.rgw.root:" + objectRealm.Name,
+		} {
+			assert.Contains(t, createArgs, flag)
+		}
+	})
+
+	t.Run("creation is refused when the realm already exists in the shared root", func(t *testing.T) {
+		r, objectRealm := getObjectRealmAndReconcileObjectRealm(t)
+		objectRealm.Spec.IsolatedRootPool = true
+
+		realmCreated := false
+		r.context.Executor = &exectest.MockExecutor{
+			MockExecuteCommandWithTimeout: func(timeout time.Duration, command string, args ...string) (string, error) {
+				if args[0] == "realm" && args[1] == "get" {
+					if hasRootPoolFlags(args) {
+						// nothing in the realm's namespace yet
+						return "", enoent()
+					}
+					// but the realm exists in the shared un-namespaced .rgw.root
+					return realmGetJSON, nil
+				}
+				if args[0] == "realm" && args[1] == "create" {
+					realmCreated = true
+					return realmGetJSON, nil
+				}
+				return "", nil
+			},
+		}
+
+		_, err := r.createCephRealm(objectRealm)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "already exists in the shared .rgw.root")
+		assert.False(t, realmCreated)
+	})
+}
+
+func TestRootPoolNamespacePopulation(t *testing.T) {
+	realm := &cephv1.CephObjectRealm{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
+	assert.Equal(t, "", object.RootPoolNamespaceForRealm(realm))
+	realm.Spec.IsolatedRootPool = true
+	assert.Equal(t, name, object.RootPoolNamespaceForRealm(realm))
 }
 
 func getObjectRealmAndReconcileObjectRealm(t *testing.T) (*ReconcileObjectRealm, *cephv1.CephObjectRealm) {

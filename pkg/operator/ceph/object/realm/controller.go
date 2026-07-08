@@ -212,6 +212,7 @@ func (r *ReconcileObjectRealm) reconcile(request reconcile.Request) (reconcile.R
 	// Set the realm as default if specified and supported
 	if cephObjectRealm.Spec.DefaultRealm {
 		objCtx := object.NewContext(r.context, r.clusterInfo, cephObjectRealm.Namespace)
+		objCtx.RootPoolNamespace = object.RootPoolNamespaceForRealm(cephObjectRealm)
 		if err := object.SetDefaultRealm(objCtx, cephObjectRealm.Name); err != nil {
 			return reconcile.Result{}, *cephObjectRealm, errors.Wrapf(err,
 				"failed to set realm %q as default", cephObjectRealm.Name)
@@ -242,6 +243,14 @@ func (r *ReconcileObjectRealm) pullCephRealm(realm *cephv1.CephObjectRealm) (rec
 	log.NamedDebug(nsName, logger, "keys found to pull realm for CephObjectRealm %q, getting ready to pull from endpoint %q", realm.Name, realm.Spec.Pull.Endpoint)
 
 	objContext := object.NewContext(r.context, r.clusterInfo, realm.Name)
+	objContext.RootPoolNamespace = object.RootPoolNamespaceForRealm(realm)
+	if objContext.RootPoolNamespace != "" {
+		// the pulled realm is written into its RADOS namespace — refuse if the same realm
+		// already has records in the shared un-namespaced .rgw.root (cannot be relocated)
+		if err := object.CheckRealmNotInSharedRoot(objContext, realm.Name); err != nil {
+			return waitForRequeueIfRealmNotReady, err
+		}
+	}
 	output, err := object.RunAdminCommandNoMultisite(objContext, false, "realm", "pull", realmArg, urlArg, accessKeyArg, secretKeyArg)
 	if err != nil {
 		return waitForRequeueIfRealmNotReady, errors.Wrapf(err, "realm pull failed for reason: %v", output)
@@ -255,10 +264,18 @@ func (r *ReconcileObjectRealm) createCephRealm(realm *cephv1.CephObjectRealm) (r
 	nsName := opcontroller.NsName(realm.Namespace, realm.Name)
 	realmArg := fmt.Sprintf("--rgw-realm=%s", realm.Name)
 	objContext := object.NewContext(r.context, r.clusterInfo, realm.Namespace)
+	objContext.RootPoolNamespace = object.RootPoolNamespaceForRealm(realm)
 
 	_, err := object.RunAdminCommandNoMultisite(objContext, true, "realm", "get", realmArg)
 	if err != nil {
 		if code, ok := exec.ExitStatus(err); ok && code == int(syscall.ENOENT) {
+			if objContext.RootPoolNamespace != "" {
+				// about to create the realm in its RADOS namespace — refuse if it already
+				// exists in the shared un-namespaced .rgw.root (cannot be relocated)
+				if err := object.CheckRealmNotInSharedRoot(objContext, realm.Name); err != nil {
+					return reconcile.Result{}, err
+				}
+			}
 			log.NamedDebug(nsName, logger, "ceph realm not found, running `radosgw-admin realm create`")
 			_, err := object.RunAdminCommandNoMultisite(objContext, false, "realm", "create", realmArg)
 			if err != nil {

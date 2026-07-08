@@ -219,9 +219,25 @@ func (r *ReconcileObjectZone) reconcile(request reconcile.Request) (reconcile.Re
 		return reconcileResponse, *cephObjectZone, err
 	}
 
+	// isolatedRootPool: resolve the realm's `.rgw.root` namespace from the CephObjectRealm
+	rootPoolNamespace, err := r.getRootPoolNamespace(cephObjectZone.Namespace, realmName)
+	if err != nil {
+		if !cephObjectZone.GetDeletionTimestamp().IsZero() && kerrors.IsNotFound(err) {
+			// The realm CRD is already gone while the zone is being deleted (e.g., all multisite
+			// CRDs deleted simultaneously): fall back to the shared root view so deletion can
+			// proceed. An isolated realm's leftover records stay in their namespace, like other
+			// preserved namespace data.
+			log.NamedWarning(request.NamespacedName, logger, "realm CRD %q not found during zone deletion, assuming a shared .rgw.root", realmName)
+		} else if kerrors.IsNotFound(err) {
+			return waitForRequeueIfObjectZoneGroupNotReady, *cephObjectZone, errors.Wrapf(err, "realm %q not found", realmName)
+		} else {
+			return waitForRequeueIfObjectZoneGroupNotReady, *cephObjectZone, errors.Wrapf(err, "error getting CephObjectRealm %q", realmName)
+		}
+	}
+
 	// DELETE: the CR was deleted
 	if !cephObjectZone.GetDeletionTimestamp().IsZero() {
-		res, err := r.deleteCephObjectZone(cephObjectZone, realmName)
+		res, err := r.deleteCephObjectZone(cephObjectZone, realmName, rootPoolNamespace)
 		return res, *cephObjectZone, err
 	}
 
@@ -229,13 +245,13 @@ func (r *ReconcileObjectZone) reconcile(request reconcile.Request) (reconcile.Re
 	r.updateStatus(k8sutil.ObservedGenerationNotAvailable, request.NamespacedName, k8sutil.ReconcilingStatus)
 
 	// Make sure zone group has been created in Ceph Cluster
-	reconcileResponse, err = r.reconcileCephZoneGroup(cephObjectZone, realmName)
+	reconcileResponse, err = r.reconcileCephZoneGroup(cephObjectZone, realmName, rootPoolNamespace)
 	if err != nil {
 		return reconcileResponse, *cephObjectZone, err
 	}
 
 	// Create/Update Ceph Zone
-	_, err = r.createorUpdateCephZone(cephObjectZone, realmName)
+	_, err = r.createorUpdateCephZone(cephObjectZone, realmName, rootPoolNamespace)
 	if err != nil {
 		return r.setFailedStatus(k8sutil.ObservedGenerationNotAvailable, cephObjectZone, request.NamespacedName, "failed to create ceph zone", err)
 	}
@@ -249,7 +265,7 @@ func (r *ReconcileObjectZone) reconcile(request reconcile.Request) (reconcile.Re
 	return reconcile.Result{}, *cephObjectZone, nil
 }
 
-func (r *ReconcileObjectZone) createorUpdateCephZone(zone *cephv1.CephObjectZone, realmName string) (reconcile.Result, error) {
+func (r *ReconcileObjectZone) createorUpdateCephZone(zone *cephv1.CephObjectZone, realmName, rootPoolNamespace string) (reconcile.Result, error) {
 	nsName := opcontroller.NsName(zone.Namespace, zone.Name)
 	log.NamedInfo(nsName, logger, "creating object zone in zonegroup %q in realm %q", zone.Spec.ZoneGroup, realmName)
 
@@ -257,6 +273,7 @@ func (r *ReconcileObjectZone) createorUpdateCephZone(zone *cephv1.CephObjectZone
 	objContext.Realm = realmName
 	objContext.ZoneGroup = zone.Spec.ZoneGroup
 	objContext.Zone = zone.Name
+	objContext.RootPoolNamespace = rootPoolNamespace
 
 	err := r.createPoolsAndZone(objContext, zone)
 	if err != nil {
@@ -390,11 +407,25 @@ func (r *ReconcileObjectZone) getCephObjectZoneGroup(zone *cephv1.CephObjectZone
 	return zoneGroup.Spec.Realm, reconcile.Result{}, nil
 }
 
-func (r *ReconcileObjectZone) reconcileCephZoneGroup(zone *cephv1.CephObjectZone, realmName string) (reconcile.Result, error) {
+// getRootPoolNamespace returns the realm's `.rgw.root` RADOS namespace (spec isolatedRootPool on
+// the CephObjectRealm), or "" for the shared un-namespaced root pool.
+func (r *ReconcileObjectZone) getRootPoolNamespace(namespace, realmName string) (string, error) {
+	if realmName == "" {
+		return "", nil
+	}
+	realm := &cephv1.CephObjectRealm{}
+	if err := r.client.Get(r.opManagerContext, types.NamespacedName{Name: realmName, Namespace: namespace}, realm); err != nil {
+		return "", err
+	}
+	return object.RootPoolNamespaceForRealm(realm), nil
+}
+
+func (r *ReconcileObjectZone) reconcileCephZoneGroup(zone *cephv1.CephObjectZone, realmName, rootPoolNamespace string) (reconcile.Result, error) {
 	nsName := opcontroller.NsName(zone.Namespace, zone.Name)
 	realmArg := fmt.Sprintf("--rgw-realm=%s", realmName)
 	zoneGroupArg := fmt.Sprintf("--rgw-zonegroup=%s", zone.Spec.ZoneGroup)
 	objContext := object.NewContext(r.context, r.clusterInfo, zone.Name)
+	objContext.RootPoolNamespace = rootPoolNamespace
 
 	_, err := object.RunAdminCommandNoMultisite(objContext, true, "zonegroup", "get", realmArg, zoneGroupArg)
 	if err != nil {
@@ -530,13 +561,14 @@ func decodePoolPrefixfromZone(data string) (string, error) {
 	return s[0], err
 }
 
-func (r *ReconcileObjectZone) deleteCephObjectZone(zone *cephv1.CephObjectZone, realmName string) (reconcile.Result, error) {
+func (r *ReconcileObjectZone) deleteCephObjectZone(zone *cephv1.CephObjectZone, realmName, rootPoolNamespace string) (reconcile.Result, error) {
 	nsName := opcontroller.NsName(zone.Namespace, zone.Name)
 	log.NamedDebug(nsName, logger, "deleting zone CR %q", zone.Name)
 	objContext := object.NewContext(r.context, r.clusterInfo, zone.Name)
 	objContext.Realm = realmName
 	objContext.ZoneGroup = zone.Spec.ZoneGroup
 	objContext.Zone = zone.Name
+	objContext.RootPoolNamespace = rootPoolNamespace
 	zonePresent, err := object.CheckIfZonePresentInZoneGroup(objContext)
 	if err != nil {
 		return reconcile.Result{}, err

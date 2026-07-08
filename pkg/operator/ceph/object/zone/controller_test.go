@@ -386,3 +386,43 @@ func TestCephObjectZoneController(t *testing.T) {
 	assert.True(t, createPoolsCalled)
 	assert.True(t, commitChangesCalled)
 }
+
+func TestGetRootPoolNamespace(t *testing.T) {
+	namespace := "rook-ceph"
+	s := scheme.Scheme
+	s.AddKnownTypes(cephv1.SchemeGroupVersion, &cephv1.CephObjectRealm{}, &cephv1.CephObjectRealmList{})
+
+	realm := &cephv1.CephObjectRealm{
+		ObjectMeta: metav1.ObjectMeta{Name: "realm-a", Namespace: namespace},
+		Spec:       cephv1.ObjectRealmSpec{IsolatedRootPool: true},
+	}
+	cl := fake.NewClientBuilder().WithScheme(s).WithRuntimeObjects(realm).Build()
+	r := &ReconcileObjectZone{client: cl, scheme: s, opManagerContext: context.TODO()}
+
+	t.Run("isolated realm", func(t *testing.T) {
+		ns, err := r.getRootPoolNamespace(namespace, "realm-a")
+		assert.NoError(t, err)
+		assert.Equal(t, "realm-a", ns)
+	})
+
+	t.Run("empty realm name uses the shared root", func(t *testing.T) {
+		ns, err := r.getRootPoolNamespace(namespace, "")
+		assert.NoError(t, err)
+		assert.Equal(t, "", ns)
+	})
+
+	t.Run("realm without isolatedRootPool", func(t *testing.T) {
+		realm.Spec.IsolatedRootPool = false
+		cl := fake.NewClientBuilder().WithScheme(s).WithRuntimeObjects(realm).Build()
+		r := &ReconcileObjectZone{client: cl, scheme: s, opManagerContext: context.TODO()}
+		ns, err := r.getRootPoolNamespace(namespace, "realm-a")
+		assert.NoError(t, err)
+		assert.Equal(t, "", ns)
+	})
+
+	t.Run("missing realm CR", func(t *testing.T) {
+		ns, err := r.getRootPoolNamespace(namespace, "no-such-realm")
+		assert.Error(t, err)
+		assert.Equal(t, "", ns)
+	})
+}

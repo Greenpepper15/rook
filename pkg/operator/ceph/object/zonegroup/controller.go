@@ -184,19 +184,22 @@ func (r *ReconcileObjectZoneGroup) reconcile(request reconcile.Request) (reconci
 	r.updateStatus(k8sutil.ObservedGenerationNotAvailable, request.NamespacedName, k8sutil.ReconcilingStatus)
 
 	// Make sure an ObjectRealm Resource is present
-	reconcileResponse, err = r.reconcileObjectRealm(cephObjectZoneGroup)
+	realm, reconcileResponse, err := r.reconcileObjectRealm(cephObjectZoneGroup)
 	if err != nil {
 		return reconcileResponse, err
 	}
 
+	// isolatedRootPool: the realm's records live in a RADOS namespace of `.rgw.root`
+	rootPoolNamespace := object.RootPoolNamespaceForRealm(realm)
+
 	// Make sure Realm has been created in Ceph Cluster
-	reconcileResponse, err = r.reconcileCephRealm(cephObjectZoneGroup)
+	reconcileResponse, err = r.reconcileCephRealm(cephObjectZoneGroup, rootPoolNamespace)
 	if err != nil {
 		return reconcileResponse, err
 	}
 
 	// Create/Update Ceph Zone Group
-	_, err = r.createCephZoneGroup(cephObjectZoneGroup)
+	_, err = r.createCephZoneGroup(cephObjectZoneGroup, rootPoolNamespace)
 	if err != nil {
 		return r.setFailedStatus(k8sutil.ObservedGenerationNotAvailable, request.NamespacedName, "failed to create ceph zone group", err)
 	}
@@ -210,13 +213,14 @@ func (r *ReconcileObjectZoneGroup) reconcile(request reconcile.Request) (reconci
 	return reconcile.Result{}, nil
 }
 
-func (r *ReconcileObjectZoneGroup) createCephZoneGroup(zoneGroup *cephv1.CephObjectZoneGroup) (reconcile.Result, error) {
+func (r *ReconcileObjectZoneGroup) createCephZoneGroup(zoneGroup *cephv1.CephObjectZoneGroup, rootPoolNamespace string) (reconcile.Result, error) {
 	nsName := opcontroller.NsName(zoneGroup.Namespace, zoneGroup.Name)
 	log.NamedInfo(nsName, logger, "creating object zone group %q in realm %q", zoneGroup.Name, zoneGroup.Spec.Realm)
 
 	realmArg := fmt.Sprintf("--rgw-realm=%s", zoneGroup.Spec.Realm)
 	zoneGroupArg := fmt.Sprintf("--rgw-zonegroup=%s", zoneGroup.Name)
 	objContext := object.NewContext(r.context, r.clusterInfo, zoneGroup.Name)
+	objContext.RootPoolNamespace = rootPoolNamespace
 
 	// get period to see if master zone group exists yet
 	output, err := object.RunAdminCommandNoMultisite(objContext, true, "period", "get", realmArg)
@@ -270,7 +274,7 @@ func (r *ReconcileObjectZoneGroup) createCephZoneGroup(zoneGroup *cephv1.CephObj
 	return reconcile.Result{}, nil
 }
 
-func (r *ReconcileObjectZoneGroup) reconcileObjectRealm(zoneGroup *cephv1.CephObjectZoneGroup) (reconcile.Result, error) {
+func (r *ReconcileObjectZoneGroup) reconcileObjectRealm(zoneGroup *cephv1.CephObjectZoneGroup) (*cephv1.CephObjectRealm, reconcile.Result, error) {
 	nsName := opcontroller.NsName(zoneGroup.Namespace, zoneGroup.Name)
 
 	// Verify the object realm API object actually exists
@@ -278,19 +282,20 @@ func (r *ReconcileObjectZoneGroup) reconcileObjectRealm(zoneGroup *cephv1.CephOb
 	err := r.client.Get(r.opManagerContext, types.NamespacedName{Name: zoneGroup.Spec.Realm, Namespace: zoneGroup.Namespace}, cephObjectRealm)
 	if err != nil {
 		if kerrors.IsNotFound(err) {
-			return waitForRequeueIfObjectRealmNotReady, errors.Wrapf(err, "realm %q not found", zoneGroup.Spec.Realm)
+			return nil, waitForRequeueIfObjectRealmNotReady, errors.Wrapf(err, "realm %q not found", zoneGroup.Spec.Realm)
 		}
-		return waitForRequeueIfObjectRealmNotReady, errors.Wrapf(err, "error finding CephObjectRealm %s", zoneGroup.Spec.Realm)
+		return nil, waitForRequeueIfObjectRealmNotReady, errors.Wrapf(err, "error finding CephObjectRealm %s", zoneGroup.Spec.Realm)
 	}
 
 	log.NamedInfo(nsName, logger, "CephObjectRealm %q found for CephObjectZoneGroup", zoneGroup.Spec.Realm)
-	return reconcile.Result{}, nil
+	return cephObjectRealm, reconcile.Result{}, nil
 }
 
-func (r *ReconcileObjectZoneGroup) reconcileCephRealm(zoneGroup *cephv1.CephObjectZoneGroup) (reconcile.Result, error) {
+func (r *ReconcileObjectZoneGroup) reconcileCephRealm(zoneGroup *cephv1.CephObjectZoneGroup, rootPoolNamespace string) (reconcile.Result, error) {
 	nsName := opcontroller.NsName(zoneGroup.Namespace, zoneGroup.Name)
 	realmArg := fmt.Sprintf("--rgw-realm=%s", zoneGroup.Spec.Realm)
 	objContext := object.NewContext(r.context, r.clusterInfo, zoneGroup.Name)
+	objContext.RootPoolNamespace = rootPoolNamespace
 
 	_, err := object.RunAdminCommandNoMultisite(objContext, true, "realm", "get", realmArg)
 	if err != nil {
