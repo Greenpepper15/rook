@@ -159,6 +159,28 @@ func TestRunAdminCommandNoMultisite(t *testing.T) {
 		// This is not the best but it shows we go through the right codepath
 		assert.EqualError(t, err, "no pods found with selector \"rook-ceph-mgr\"")
 	})
+
+	t.Run("isolatedRootPool context appends the root pool overrides", func(t *testing.T) {
+		var captured []string
+		executor := &exectest.MockExecutor{
+			MockExecuteCommandWithTimeout: func(timeout time.Duration, command string, args ...string) (string, error) {
+				captured = args
+				return `{}`, nil
+			},
+		}
+		isolatedContext := &Context{
+			Context:           &clusterd.Context{Executor: executor},
+			clusterInfo:       client.AdminTestClusterInfo("mycluster"),
+			Name:              "my-store",
+			RootPoolNamespace: "my-store",
+		}
+
+		_, err := RunAdminCommandNoMultisite(isolatedContext, true, []string{"zone", "get"}...)
+		assert.NoError(t, err)
+		for _, flag := range rootPoolArgs("my-store") {
+			assert.Contains(t, captured, flag)
+		}
+	})
 }
 
 func TestCommitConfigChanges(t *testing.T) {

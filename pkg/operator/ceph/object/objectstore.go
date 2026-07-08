@@ -228,35 +228,41 @@ func deleteSingleSiteRealmAndPools(objContext *Context, spec cephv1.ObjectStoreS
 	return nil
 }
 
-// This is used for quickly getting the name of the realm, zone group, and zone for an object-store to pass into a Context
-func getMultisiteForObjectStore(ctx context.Context, clusterdContext *clusterd.Context, spec *cephv1.ObjectStoreSpec, namespace, name string) (string, string, string, error) {
+// This is used for quickly getting the name of the realm, zone group, zone, and `.rgw.root`
+// namespace (spec isolatedRootPool) for an object-store to pass into a Context
+func getMultisiteForObjectStore(ctx context.Context, clusterdContext *clusterd.Context, spec *cephv1.ObjectStoreSpec, namespace, name string) (string, string, string, string, error) {
 	if spec.IsExternal() {
 		// In https://github.com/rook/rook/issues/6342, it was determined that
 		// a multisite context isn't needed for external mode CephObjectStores.
 		// The context is only needed for managing an object store, which isn't
 		// happening in external mode.
-		return "", "default", "default", nil
+		return "", "default", "default", "", nil
 	}
 	if spec.IsMultisite() {
 		zone, err := clusterdContext.RookClientset.CephV1().CephObjectZones(namespace).Get(ctx, spec.Zone.Name, metav1.GetOptions{})
 		if err != nil {
-			return "", "", "", errors.Wrapf(err, "failed to find zone for object-store %q", name)
+			return "", "", "", "", errors.Wrapf(err, "failed to find zone for object-store %q", name)
 		}
 
 		zonegroup, err := clusterdContext.RookClientset.CephV1().CephObjectZoneGroups(namespace).Get(ctx, zone.Spec.ZoneGroup, metav1.GetOptions{})
 		if err != nil {
-			return "", "", "", errors.Wrapf(err, "failed to find zone group for object-store %q", name)
+			return "", "", "", "", errors.Wrapf(err, "failed to find zone group for object-store %q", name)
 		}
 
 		realm, err := clusterdContext.RookClientset.CephV1().CephObjectRealms(namespace).Get(ctx, zonegroup.Spec.Realm, metav1.GetOptions{})
 		if err != nil {
-			return "", "", "", errors.Wrapf(err, "failed to find realm for object-store %q", name)
+			return "", "", "", "", errors.Wrapf(err, "failed to find realm for object-store %q", name)
 		}
 
-		return realm.Name, zonegroup.Name, zone.Name, nil
+		return realm.Name, zonegroup.Name, zone.Name, RootPoolNamespaceForRealm(realm), nil
 	}
 
-	return name, name, name, nil
+	rootPoolNamespace := ""
+	if spec.IsolatedRootPool {
+		// non-multisite stores get a realm named after the store
+		rootPoolNamespace = name
+	}
+	return name, name, name, rootPoolNamespace, nil
 }
 
 func CheckZoneIsMaster(objContext *Context) (bool, error) {
@@ -439,6 +445,14 @@ func createMultisiteConfigurations(objContext *Context, store *cephv1.CephObject
 	if code != int(syscall.ENOENT) {
 		code := strconv.Itoa(code)
 		return errors.Wrapf(getConfigErr, "'radosgw-admin %q get' failed with code %q, for reason %q", configType, code, output)
+	}
+
+	// isolatedRootPool: about to create the realm in its RADOS namespace — refuse if the same
+	// realm already has records in the shared un-namespaced .rgw.root (cannot be relocated)
+	if configType == "realm" && objContext.RootPoolNamespace != "" {
+		if err := CheckRealmNotInSharedRoot(objContext, objContext.Realm); err != nil {
+			return err
+		}
 	}
 
 	// create the object if it doesn't exist yet

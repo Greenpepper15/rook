@@ -50,6 +50,11 @@ type Context struct {
 	Realm       string
 	ZoneGroup   string
 	Zone        string
+	// RootPoolNamespace, when set, is the RADOS namespace within the `.rgw.root` pool holding
+	// this store's realm/zonegroup/zone/period records (spec isolatedRootPool). Every
+	// radosgw-admin invocation through this context gets the four rgw_*_root_pool overrides, so
+	// provisioning resolves the same records as the RGW daemons.
+	RootPoolNamespace string
 }
 
 func (c *Context) NsName() types.NamespacedName {
@@ -134,7 +139,7 @@ func NewMultisiteContext(context *clusterd.Context, clusterInfo *cephclient.Clus
 		return nil, err
 	}
 
-	realmName, zoneGroupName, zoneName, err := getMultisiteForObjectStore(clusterInfo.Context, context, &store.Spec, store.Namespace, store.Name)
+	realmName, zoneGroupName, zoneName, rootPoolNamespace, err := getMultisiteForObjectStore(clusterInfo.Context, context, &store.Spec, store.Namespace, store.Name)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed to get realm/zone group/zone for object store %q", nsName)
 	}
@@ -142,6 +147,7 @@ func NewMultisiteContext(context *clusterd.Context, clusterInfo *cephclient.Clus
 	objContext.Realm = realmName
 	objContext.ZoneGroup = zoneGroupName
 	objContext.Zone = zoneName
+	objContext.RootPoolNamespace = rootPoolNamespace
 	return objContext, nil
 }
 
@@ -240,6 +246,15 @@ func RunAdminCommandNoMultisiteWithTimeout(c *Context, expectJSON bool, timeout 
 	var output, stderr string
 	var err error
 	nsName := controller.NsName(c.clusterInfo.Namespace, c.Name)
+
+	// isolatedRootPool: resolve the store's topology records from their RADOS namespace. Built
+	// as a fresh slice because args may alias a caller's slice that is appended to again on
+	// retries.
+	if c.RootPoolNamespace != "" {
+		withRootPool := make([]string, 0, len(args)+4)
+		withRootPool = append(withRootPool, args...)
+		args = append(withRootPool, rootPoolArgs(c.RootPoolNamespace)...)
+	}
 
 	// If Multus is enabled we proxy all the command to the mgr sidecar
 	if c.clusterInfo.NetworkSpec.IsMultus() {
