@@ -1805,6 +1805,22 @@ bool
 <p>Set this realm as the default in Ceph. Only one realm should be default.</p>
 </td>
 </tr>
+<tr>
+<td>
+<code>isolatedRootPool</code><br/>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>IsolatedRootPool, when true, stores this realm&rsquo;s RGW realm/zonegroup/zone/period records
+in a RADOS namespace of the <code>.rgw.root</code> pool named after the realm, instead of sharing
+the un-namespaced <code>.rgw.root</code> with every other realm in the Ceph cluster. The zonegroup,
+zone, and object store controllers for this realm follow this setting. Only applies to
+newly created (or pulled) realms: existing RGW topology cannot be relocated.</p>
+</td>
+</tr>
 </table>
 </td>
 </tr>
@@ -2064,6 +2080,24 @@ bool
 Do not set this true on more than one CephObjectStore.
 This may not be set when zone is also specified; in this case, the realm
 referenced by the zone&rsquo;s zonegroup should configure defaulting behavior.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>isolatedRootPool</code><br/>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>IsolatedRootPool, when true, stores this object store&rsquo;s RGW realm/zonegroup/zone/period
+records in a RADOS namespace of the <code>.rgw.root</code> pool named after the store, instead of
+sharing the un-namespaced <code>.rgw.root</code> with every other object store in the Ceph cluster.
+Requires sharedPools, so that the store&rsquo;s entire footprint lives under its own RADOS
+namespaces. Only applies to newly created object stores: existing RGW topology cannot be
+relocated. This may not be set when zone is also specified; for multisite, set
+isolatedRootPool on the CephObjectRealm instead.</p>
 </td>
 </tr>
 </table>
@@ -11759,6 +11793,22 @@ bool
 <p>Set this realm as the default in Ceph. Only one realm should be default.</p>
 </td>
 </tr>
+<tr>
+<td>
+<code>isolatedRootPool</code><br/>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>IsolatedRootPool, when true, stores this realm&rsquo;s RGW realm/zonegroup/zone/period records
+in a RADOS namespace of the <code>.rgw.root</code> pool named after the realm, instead of sharing
+the un-namespaced <code>.rgw.root</code> with every other realm in the Ceph cluster. The zonegroup,
+zone, and object store controllers for this realm follow this setting. Only applies to
+newly created (or pulled) realms: existing RGW topology cannot be relocated.</p>
+</td>
+</tr>
 </tbody>
 </table>
 <h3 id="ceph.rook.io/v1.ObjectSharedPoolsSpec">ObjectSharedPoolsSpec
@@ -12325,6 +12375,24 @@ bool
 Do not set this true on more than one CephObjectStore.
 This may not be set when zone is also specified; in this case, the realm
 referenced by the zone&rsquo;s zonegroup should configure defaulting behavior.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>isolatedRootPool</code><br/>
+<em>
+bool
+</em>
+</td>
+<td>
+<em>(Optional)</em>
+<p>IsolatedRootPool, when true, stores this object store&rsquo;s RGW realm/zonegroup/zone/period
+records in a RADOS namespace of the <code>.rgw.root</code> pool named after the store, instead of
+sharing the un-namespaced <code>.rgw.root</code> with every other object store in the Ceph cluster.
+Requires sharedPools, so that the store&rsquo;s entire footprint lives under its own RADOS
+namespaces. Only applies to newly created object stores: existing RGW topology cannot be
+relocated. This may not be set when zone is also specified; for multisite, set
+isolatedRootPool on the CephObjectRealm instead.</p>
 </td>
 </tr>
 </tbody>

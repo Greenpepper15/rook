@@ -1788,6 +1788,7 @@ type CephObjectStoreList struct {
 
 // ObjectStoreSpec represent the spec of a pool
 // +kubebuilder:validation:XValidation:rule="!(has(self.defaultRealm) && self.defaultRealm == true && has(self.zone) && size(self.zone.name) > 0)",message="defaultRealm must not be true when zone.name is set (multisite configuration)"
+// +kubebuilder:validation:XValidation:rule="!(has(self.isolatedRootPool) && self.isolatedRootPool == true && has(self.zone) && size(self.zone.name) > 0)",message="isolatedRootPool must not be true when zone.name is set (multisite); set isolatedRootPool on the CephObjectRealm instead"
 type ObjectStoreSpec struct {
 	// The metadata pool settings
 	// +optional
@@ -1858,6 +1859,17 @@ type ObjectStoreSpec struct {
 	// referenced by the zone's zonegroup should configure defaulting behavior.
 	// +optional
 	DefaultRealm bool `json:"defaultRealm,omitempty"`
+
+	// IsolatedRootPool, when true, stores this object store's RGW realm/zonegroup/zone/period
+	// records in a RADOS namespace of the `.rgw.root` pool named after the store, instead of
+	// sharing the un-namespaced `.rgw.root` with every other object store in the Ceph cluster.
+	// Requires sharedPools, so that the store's entire footprint lives under its own RADOS
+	// namespaces. Only applies to newly created object stores: existing RGW topology cannot be
+	// relocated. This may not be set when zone is also specified; for multisite, set
+	// isolatedRootPool on the CephObjectRealm instead.
+	// +kubebuilder:validation:XValidation:message="isolatedRootPool is immutable",rule="self == oldSelf"
+	// +optional
+	IsolatedRootPool bool `json:"isolatedRootPool,omitempty"`
 }
 
 // ObjectSharedPoolsSpec represents object store pool info when configuring RADOS namespaces in existing pools.
@@ -2525,6 +2537,15 @@ type ObjectRealmSpec struct {
 	// Set this realm as the default in Ceph. Only one realm should be default.
 	// +optional
 	DefaultRealm bool `json:"defaultRealm,omitempty"`
+
+	// IsolatedRootPool, when true, stores this realm's RGW realm/zonegroup/zone/period records
+	// in a RADOS namespace of the `.rgw.root` pool named after the realm, instead of sharing
+	// the un-namespaced `.rgw.root` with every other realm in the Ceph cluster. The zonegroup,
+	// zone, and object store controllers for this realm follow this setting. Only applies to
+	// newly created (or pulled) realms: existing RGW topology cannot be relocated.
+	// +kubebuilder:validation:XValidation:message="isolatedRootPool is immutable",rule="self == oldSelf"
+	// +optional
+	IsolatedRootPool bool `json:"isolatedRootPool,omitempty"`
 }
 
 // PullSpec represents the pulling specification of a Ceph Object Storage Gateway Realm

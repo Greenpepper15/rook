@@ -12599,6 +12599,17 @@ spec:
                 defaultRealm:
                   description: Set this realm as the default in Ceph. Only one realm should be default.
                   type: boolean
+                isolatedRootPool:
+                  description: |-
+                    IsolatedRootPool, when true, stores this realm's RGW realm/zonegroup/zone/period records
+                    in a RADOS namespace of the `.rgw.root` pool named after the realm, instead of sharing
+                    the un-namespaced `.rgw.root` with every other realm in the Ceph cluster. The zonegroup,
+                    zone, and object store controllers for this realm follow this setting. Only applies to
+                    newly created (or pulled) realms: existing RGW topology cannot be relocated.
+                  type: boolean
+                  x-kubernetes-validations:
+                    - message: isolatedRootPool is immutable
+                      rule: self == oldSelf
                 pull:
                   description: PullSpec represents the pulling specification of a Ceph Object Storage Gateway Realm
                   properties:
@@ -14529,6 +14540,19 @@ spec:
                         type: string
                       type: array
                   type: object
+                isolatedRootPool:
+                  description: |-
+                    IsolatedRootPool, when true, stores this object store's RGW realm/zonegroup/zone/period
+                    records in a RADOS namespace of the `.rgw.root` pool named after the store, instead of
+                    sharing the un-namespaced `.rgw.root` with every other object store in the Ceph cluster.
+                    Requires sharedPools, so that the store's entire footprint lives under its own RADOS
+                    namespaces. Only applies to newly created object stores: existing RGW topology cannot be
+                    relocated. This may not be set when zone is also specified; for multisite, set
+                    isolatedRootPool on the CephObjectRealm instead.
+                  type: boolean
+                  x-kubernetes-validations:
+                    - message: isolatedRootPool is immutable
+                      rule: self == oldSelf
                 metadataPool:
                   description: The metadata pool settings
                   nullable: true
@@ -15000,6 +15024,8 @@ spec:
               x-kubernetes-validations:
                 - message: defaultRealm must not be true when zone.name is set (multisite configuration)
                   rule: '!(has(self.defaultRealm) && self.defaultRealm == true && has(self.zone) && size(self.zone.name) > 0)'
+                - message: isolatedRootPool must not be true when zone.name is set (multisite); set isolatedRootPool on the CephObjectRealm instead
+                  rule: '!(has(self.isolatedRootPool) && self.isolatedRootPool == true && has(self.zone) && size(self.zone.name) > 0)'
             status:
               description: ObjectStoreStatus represents the status of a Ceph Object Store resource
               properties:
