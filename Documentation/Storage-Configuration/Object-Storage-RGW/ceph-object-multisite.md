@@ -42,6 +42,12 @@ When a non-master zone or non-master zone group is created, the zone group or zo
 
 The zone will create the pools for the object-store(s) that are in the zone to use.
 
+When the realm's topology records (realm, zone group, zone, and period) should not share the cluster-wide
+`.rgw.root` pool with other realms, set `isolatedRootPool: true` on the CephObjectRealm. The zone group,
+zone, and object store controllers for that realm follow the setting automatically. The setting is
+immutable and only applies to newly created (or pulled) realms. See
+[Isolating the RGW topology pool](object-storage.md#isolating-the-rgw-topology-pool) for details.
+
 When one of the multisite CRs (realm, zone group, zone) is deleted the underlying ceph realm/zone group/zone is not deleted, neither are the pools created by the zone. See the "Multisite Cleanup" section for more information.
 
 For more information on the multisite CRDs, see the related CRDs:

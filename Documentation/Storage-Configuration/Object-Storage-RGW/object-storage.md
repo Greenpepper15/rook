@@ -195,6 +195,52 @@ To consume the object store, continue below in the section to [Create a bucket](
 Modify the default example object store name from `my-store` to the alternate name of the object store
 such as `store-a` in this example.
 
+#### Isolating the RGW topology pool
+
+Even with shared pools, every object store in the Ceph cluster keeps its RGW topology records
+(realm, zone group, zone, and period) together in the single, un-namespaced `.rgw.root` pool.
+Setting `isolatedRootPool: true` stores a new object store's topology records in a RADOS namespace
+of `.rgw.root` named after the store instead, so that the store's entire footprint lives under its
+own RADOS namespaces:
+
+```yaml
+spec:
+  sharedPools:
+    metadataPoolName: rgw-meta-pool
+    dataPoolName: rgw-data-pool
+    preserveRadosNamespaceDataOnDelete: true
+  isolatedRootPool: true
+```
+
+Rook passes the location to the RGW daemons and to all of its own `radosgw-admin` calls
+automatically. The setting is immutable and applies only to newly created object stores: existing
+RGW topology cannot be relocated, and Rook will refuse to provision a store whose realm already
+exists in the shared `.rgw.root`. For multisite setups, set `isolatedRootPool` on the
+[CephObjectRealm](../../CRDs/Object-Storage/ceph-object-realm-crd.md) instead; the zone group,
+zone, and object store controllers follow the realm's setting.
+
+Operational notes:
+
+* `radosgw-admin` run out-of-band (e.g. from the toolbox) does not see an isolated store's
+  topology (`radosgw-admin realm list` will not show its realm) unless the root pool overrides are
+  passed explicitly, for example:
+
+    ```console
+    radosgw-admin \
+      --rgw-realm-root-pool=.rgw.root:store-a \
+      --rgw-zonegroup-root-pool=.rgw.root:store-a \
+      --rgw-zone-root-pool=.rgw.root:store-a \
+      --rgw-period-root-pool=.rgw.root:store-a \
+      realm get --rgw-realm=store-a
+    ```
+
+* The Ceph mgr modules (e.g. the dashboard's multisite topology view) resolve the default
+  `.rgw.root` and will not display isolated realms. Dashboard screens and Rook features based on
+  the RGW admin ops API are unaffected.
+* Do not downgrade the Rook operator below the release that introduced this setting while object
+  stores with `isolatedRootPool` exist: an older operator would re-create their topology in the
+  shared `.rgw.root`.
+
 ### Create Local Object Store(s) with pool placements
 
 !!! attention

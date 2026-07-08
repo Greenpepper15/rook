@@ -8,6 +8,11 @@ kind: CephObjectRealm
 metadata:
   name: realm-a
   namespace: rook-ceph # namespace:cluster
+# spec:
+#   # Store this realm's RGW topology records (realm/zonegroup/zone/period) in a RADOS namespace
+#   # of .rgw.root named after the realm, instead of sharing the un-namespaced .rgw.root with all
+#   # realms. Immutable, and only applies to newly created (or pulled) realms.
+#   isolatedRootPool: true
 ---
 apiVersion: ceph.rook.io/v1
 kind: CephObjectZoneGroup

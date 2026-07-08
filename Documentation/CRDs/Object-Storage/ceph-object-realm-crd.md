@@ -32,3 +32,10 @@ spec:
 * `pull`: This optional section is for the pulling the realm for another ceph cluster.
     * `endpoint`: The endpoint in the realm from another ceph cluster you want to pull from. This endpoint must be in the master zone of the master zone group of the realm.
 * `defaultRealm`: When set to true, Rook will mark the CephObjectStore's realm as the default realm in the Ceph cluster. Only one realm can be marked default. Ceph does not allow default to be unassigned after it is assigned; a different realm can be marked default instead.
+* `isolatedRootPool`: When set to true, the realm's RGW topology records (realm, zone group, zone, and period)
+    are stored in a RADOS namespace of the `.rgw.root` pool named after the realm, instead of sharing the
+    un-namespaced `.rgw.root` with every other realm in the Ceph cluster. The zone group, zone, and object store
+    controllers for this realm follow this setting automatically. The setting is immutable and only applies to
+    newly created (or pulled) realms: existing RGW topology cannot be relocated.
+    See [Isolating the RGW topology pool](../../Storage-Configuration/Object-Storage-RGW/object-storage.md#isolating-the-rgw-topology-pool)
+    for details and operational notes.

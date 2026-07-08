@@ -102,6 +102,14 @@ When the `zone` section is set pools with the object stores name will not be cre
 ### Realm
 
 * `defaultRealm`: When set to true, Rook will mark the CephObjectStore's realm as the default realm in the Ceph cluster. Only one realm can be marked default. Ceph does not allow default to be unassigned after it is assigned; a different realm can be marked default instead.
+* `isolatedRootPool`: When set to true, the object store's RGW topology records (realm, zone group, zone, and period)
+    are stored in a RADOS namespace of the `.rgw.root` pool named after the store, instead of sharing the
+    un-namespaced `.rgw.root` with every other object store in the Ceph cluster. Requires `sharedPools`, so that
+    the store's entire footprint lives under its own RADOS namespaces. The setting is immutable and only applies
+    to newly created object stores: existing RGW topology cannot be relocated. It may not be set together with
+    `zone`; for multisite, set `isolatedRootPool` on the [CephObjectRealm](ceph-object-realm-crd.md) instead.
+    See [Isolating the RGW topology pool](../../Storage-Configuration/Object-Storage-RGW/object-storage.md#isolating-the-rgw-topology-pool)
+    for details and operational notes.
 
 ## Auth Settings
 

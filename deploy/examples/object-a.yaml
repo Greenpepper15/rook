@@ -19,6 +19,10 @@ spec:
     metadataPoolName: rgw-meta-pool
     dataPoolName: rgw-data-pool
     preserveRadosNamespaceDataOnDelete: true
+  # Store this object store's RGW topology records (realm/zonegroup/zone/period) in a RADOS
+  # namespace of .rgw.root named after the store, instead of sharing the un-namespaced .rgw.root
+  # with all object stores. Immutable, and only applies to newly created object stores.
+  # isolatedRootPool: true
   # The gateway service configuration
   gateway:
     # A reference to the secret in the rook namespace where the ssl certificate is stored
