@@ -240,6 +240,9 @@ Operational notes:
 * Do not downgrade the Rook operator below the release that introduced this setting while object
   stores with `isolatedRootPool` exist: an older operator would re-create their topology in the
   shared `.rgw.root`.
+* `isolatedRootPool` has no effect on external object stores (`spec.gateway.externalRgwEndpoints`):
+  Rook runs no RGW daemon and issues no `radosgw-admin` commands for them, so the external gateway's
+  own configuration controls its root pool.
 
 ### Create Local Object Store(s) with pool placements
 

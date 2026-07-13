@@ -108,6 +108,7 @@ When the `zone` section is set pools with the object stores name will not be cre
     the store's entire footprint lives under its own RADOS namespaces. The setting is immutable and only applies
     to newly created object stores: existing RGW topology cannot be relocated. It may not be set together with
     `zone`; for multisite, set `isolatedRootPool` on the [CephObjectRealm](ceph-object-realm-crd.md) instead.
+    It has no effect on external object stores (`spec.gateway.externalRgwEndpoints`), where Rook manages no RGW.
     See [Isolating the RGW topology pool](../../Storage-Configuration/Object-Storage-RGW/object-storage.md#isolating-the-rgw-topology-pool)
     for details and operational notes.
 

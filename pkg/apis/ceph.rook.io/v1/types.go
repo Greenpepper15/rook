@@ -1866,7 +1866,9 @@ type ObjectStoreSpec struct {
 	// Requires sharedPools, so that the store's entire footprint lives under its own RADOS
 	// namespaces. Only applies to newly created object stores: existing RGW topology cannot be
 	// relocated. This may not be set when zone is also specified; for multisite, set
-	// isolatedRootPool on the CephObjectRealm instead.
+	// isolatedRootPool on the CephObjectRealm instead. This has no effect on external object stores
+	// (spec.gateway.externalRgwEndpoints): Rook runs no RGW there, so the external gateway's own
+	// configuration controls its root pool.
 	// +kubebuilder:validation:XValidation:message="isolatedRootPool is immutable",rule="self == oldSelf"
 	// +optional
 	IsolatedRootPool bool `json:"isolatedRootPool,omitempty"`

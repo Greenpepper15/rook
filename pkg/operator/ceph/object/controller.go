@@ -529,6 +529,10 @@ func (r *ReconcileCephObjectStore) reconcileCreateObjectStore(cephObjectStore *c
 	if cephObjectStore.Spec.IsExternal() {
 		log.NamedInfo(namespacedName, logger, "reconciling external object store")
 
+		if cephObjectStore.Spec.IsolatedRootPool {
+			log.NamedWarning(namespacedName, logger, "isolatedRootPool has no effect on an external object store: Rook runs no RGW for it, so the external gateway's own configuration controls its root pool")
+		}
+
 		// Before v1.11, Rook created a Service and custom Endpoints that routed to external RGW
 		// endpoints. This causes problems if the external endpoint has TLS certificates that block
 		// connections to other endpoints. This also makes it impossible to create an external mode
