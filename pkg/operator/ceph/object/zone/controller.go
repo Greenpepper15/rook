@@ -54,6 +54,11 @@ import (
 
 const (
 	controllerName = "ceph-object-zone-controller"
+
+	// rootPoolNamespaceAnnotation records the resolved `.rgw.root` RADOS namespace (from the
+	// CephObjectRealm's isolatedRootPool) on the CephObjectZone, so that deletion can target the
+	// right root pool view after the realm CR — which carries no finalizer — is already gone.
+	rootPoolNamespaceAnnotation = "object.rook.io/root-pool-namespace"
 )
 
 type domainRootType struct {
@@ -223,11 +228,19 @@ func (r *ReconcileObjectZone) reconcile(request reconcile.Request) (reconcile.Re
 	rootPoolNamespace, err := r.getRootPoolNamespace(cephObjectZone.Namespace, realmName)
 	if err != nil {
 		if !cephObjectZone.GetDeletionTimestamp().IsZero() && kerrors.IsNotFound(err) {
-			// The realm CRD is already gone while the zone is being deleted (e.g., all multisite
-			// CRDs deleted simultaneously): fall back to the shared root view so deletion can
-			// proceed. An isolated realm's leftover records stay in their namespace, like other
-			// preserved namespace data.
-			log.NamedWarning(request.NamespacedName, logger, "realm CRD %q not found during zone deletion, assuming a shared .rgw.root", realmName)
+			// The realm CR carries no finalizer and can be gone before this finalizer-gated zone
+			// finishes deleting. Recover the namespace recorded on the zone at reconcile time so
+			// cleanup targets the zone's actual `.rgw.root` view rather than a guessed one: against
+			// the shared root, an isolated zone's cleanup would fail forever or, on a name
+			// collision, operate on another tenant's zone.
+			if recorded, ok := cephObjectZone.Annotations[rootPoolNamespaceAnnotation]; ok {
+				rootPoolNamespace = recorded
+			} else {
+				// The annotation is written before any Ceph-side work, so a zone without it either
+				// predates isolatedRootPool or never created Ceph records: the shared root is the
+				// only place its records can be.
+				log.NamedWarning(request.NamespacedName, logger, "realm CR %q not found during zone deletion and the zone has no recorded root pool namespace; assuming the shared .rgw.root", realmName)
+			}
 		} else if kerrors.IsNotFound(err) {
 			return waitForRequeueIfObjectZoneGroupNotReady, *cephObjectZone, errors.Wrapf(err, "realm %q not found", realmName)
 		} else {
@@ -239,6 +252,12 @@ func (r *ReconcileObjectZone) reconcile(request reconcile.Request) (reconcile.Re
 	if !cephObjectZone.GetDeletionTimestamp().IsZero() {
 		res, err := r.deleteCephObjectZone(cephObjectZone, realmName, rootPoolNamespace)
 		return res, *cephObjectZone, err
+	}
+
+	// Record the resolved namespace on the zone before any Ceph-side work, so that deletion can
+	// still find the zone's records after the realm CR is gone.
+	if err := r.persistRootPoolNamespace(cephObjectZone, rootPoolNamespace); err != nil {
+		return reconcile.Result{}, *cephObjectZone, errors.Wrap(err, "failed to record the root pool namespace on the CephObjectZone")
 	}
 
 	// Start object reconciliation, updating status for this
@@ -405,6 +424,20 @@ func (r *ReconcileObjectZone) getCephObjectZoneGroup(zone *cephv1.CephObjectZone
 
 	log.NamedDebug(nsName, logger, "CephObjectZoneGroup %v found", zoneGroup.Name)
 	return zoneGroup.Spec.Realm, reconcile.Result{}, nil
+}
+
+// persistRootPoolNamespace records the resolved root pool namespace on the zone CR. It must run
+// before any Ceph-side work so that a zone with Ceph records always carries the annotation.
+func (r *ReconcileObjectZone) persistRootPoolNamespace(zone *cephv1.CephObjectZone, rootPoolNamespace string) error {
+	if recorded, ok := zone.Annotations[rootPoolNamespaceAnnotation]; ok && recorded == rootPoolNamespace {
+		return nil
+	}
+	original := zone.DeepCopy()
+	if zone.Annotations == nil {
+		zone.Annotations = map[string]string{}
+	}
+	zone.Annotations[rootPoolNamespaceAnnotation] = rootPoolNamespace
+	return r.client.Patch(r.opManagerContext, zone, client.MergeFrom(original))
 }
 
 // getRootPoolNamespace returns the realm's `.rgw.root` RADOS namespace (spec isolatedRootPool on

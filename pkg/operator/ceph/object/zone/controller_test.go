@@ -25,6 +25,7 @@ import (
 	"github.com/coreos/pkg/capnslog"
 	cephv1 "github.com/rook/rook/pkg/apis/ceph.rook.io/v1"
 	rookclient "github.com/rook/rook/pkg/client/clientset/versioned/fake"
+	opcontroller "github.com/rook/rook/pkg/operator/ceph/controller"
 	"github.com/rook/rook/pkg/operator/ceph/object"
 	"github.com/rook/rook/pkg/operator/test"
 
@@ -424,5 +425,170 @@ func TestGetRootPoolNamespace(t *testing.T) {
 		ns, err := r.getRootPoolNamespace(namespace, "no-such-realm")
 		assert.Error(t, err)
 		assert.Equal(t, "", ns)
+	})
+}
+
+// TestReconcileZoneDeletionWithMissingRealm covers zone deletion when the CephObjectRealm CR is
+// already gone: realm CRs carry no finalizer and can disappear before the finalizer-gated zone
+// finishes deleting. The reconciler must recover the `.rgw.root` namespace recorded on the zone
+// (falling back to the shared root for zones without a record) and run the normal deletion path,
+// so cleanup targets the zone's actual root pool view and the dependents guard still applies.
+func TestReconcileZoneDeletionWithMissingRealm(t *testing.T) {
+	name := "zone-a"
+	zonegroup := "zonegroup-a"
+	realmName := "realm-a"
+	namespace := "rook-ceph"
+	// A zonegroup whose zone list contains zone-a, to drive the zonePresent=true dependents path.
+	zoneGroupContainsZoneJSON := `{"id": "fd8ff110", "name": "zonegroup-a", "master_zone": "other-zone-id", "zones": [{"id": "zone-a-id", "name": "zone-a", "endpoints": [":80"]}]}`
+
+	s := scheme.Scheme
+	s.AddKnownTypes(cephv1.SchemeGroupVersion,
+		&cephv1.CephObjectZone{}, &cephv1.CephObjectZoneList{},
+		&cephv1.CephObjectZoneGroup{}, &cephv1.CephObjectZoneGroupList{},
+		&cephv1.CephObjectRealm{}, &cephv1.CephObjectRealmList{},
+		&cephv1.CephCluster{}, &cephv1.CephClusterList{})
+
+	// run reconciles one zone deletion with the realm CR absent and returns the outcome.
+	run := func(t *testing.T, annotations map[string]string, zoneGroupJSON string, dependentStore *cephv1.CephObjectStore) (reconcile.Result, [][]string, *cephv1.CephObjectZone, error) {
+		ctx := context.TODO()
+		objectZone := &cephv1.CephObjectZone{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        name,
+				Namespace:   namespace,
+				Annotations: annotations,
+				// The production finalizer plus the finalizer name the reconciler computes under
+				// the fake client, which strips TypeMeta on Get so buildFinalizerName sees an empty
+				// Kind. Seeding both keeps AddFinalizerIfNotPresent a no-op (a real API server
+				// rejects adding finalizers to a deleting object) and makes RemoveFinalizer
+				// observable: successful deletion removes the computed ".ceph.rook.io" entry.
+				Finalizers: []string{"cephobjectzone.ceph.rook.io", ".ceph.rook.io"},
+			},
+			TypeMeta: metav1.TypeMeta{Kind: "CephObjectZone"},
+			Spec: cephv1.ObjectZoneSpec{
+				ZoneGroup:    zonegroup,
+				MetadataPool: cephv1.PoolSpec{},
+				DataPool:     cephv1.PoolSpec{},
+			},
+		}
+		// The zonegroup CR still exists and points at a realm whose CR has been deleted.
+		objectZoneGroup := &cephv1.CephObjectZoneGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: zonegroup, Namespace: namespace},
+			TypeMeta:   metav1.TypeMeta{Kind: "CephObjectZoneGroup"},
+			Spec:       cephv1.ObjectZoneGroupSpec{Realm: realmName},
+		}
+		cephCluster := &cephv1.CephCluster{
+			ObjectMeta: metav1.ObjectMeta{Name: namespace, Namespace: namespace},
+			Status: cephv1.ClusterStatus{
+				Phase:      k8sutil.ReadyStatus,
+				CephStatus: &cephv1.CephStatus{Health: "HEALTH_OK"},
+			},
+		}
+
+		var radosgwCalls [][]string
+		executor := &exectest.MockExecutor{
+			MockExecuteCommandWithOutput: func(command string, args ...string) (string, error) {
+				if args[0] == "status" {
+					return `{"fsid":"c47cac40-9bee-4d52-823b-ccd803ba5bfe","health":{"checks":{},"status":"HEALTH_OK"},"pgmap":{"num_pgs":100,"pgs_by_state":[{"state_name":"active+clean","count":100}]}}`, nil
+				}
+				return "", nil
+			},
+			MockExecuteCommandWithTimeout: func(timeout time.Duration, command string, args ...string) (string, error) {
+				radosgwCalls = append(radosgwCalls, args)
+				if args[0] == "zonegroup" && args[1] == "get" {
+					return zoneGroupJSON, nil
+				}
+				if args[0] == "zone" && args[1] == "get" {
+					return zoneGetOutput, nil
+				}
+				return "", nil
+			},
+		}
+
+		rookObjects := []runtime.Object{}
+		if dependentStore != nil {
+			rookObjects = append(rookObjects, dependentStore)
+		}
+		c := &clusterd.Context{
+			Executor:      executor,
+			RookClientset: rookclient.NewSimpleClientset(rookObjects...),
+			Clientset:     test.New(t, 3),
+		}
+		secret := &v1.Secret{
+			ObjectMeta: metav1.ObjectMeta{Name: "rook-ceph-mon", Namespace: namespace},
+			Data: map[string][]byte{
+				"fsid":         []byte(name),
+				"mon-secret":   []byte("monsecret"),
+				"admin-secret": []byte("adminsecret"),
+			},
+			Type: k8sutil.RookType,
+		}
+		_, err := c.Clientset.CoreV1().Secrets(namespace).Create(ctx, secret, metav1.CreateOptions{})
+		assert.NoError(t, err)
+
+		// No CephObjectRealm object is seeded on purpose: the realm CR is gone.
+		cl := fake.NewClientBuilder().WithScheme(s).WithRuntimeObjects(objectZone, objectZoneGroup, cephCluster).Build()
+		r := &ReconcileObjectZone{
+			client:           cl,
+			scheme:           s,
+			context:          c,
+			clusterInfo:      cephclient.AdminTestClusterInfo("rook"),
+			opManagerContext: ctx,
+			recorder:         events.NewFakeRecorder(50),
+		}
+
+		// Deleting a finalizer-bearing object keeps it around with the deletion timestamp set.
+		err = cl.Delete(ctx, objectZone)
+		assert.NoError(t, err)
+
+		req := reconcile.Request{NamespacedName: types.NamespacedName{Name: name, Namespace: namespace}}
+		res, err := r.Reconcile(ctx, req)
+
+		remaining := &cephv1.CephObjectZone{}
+		getErr := cl.Get(ctx, req.NamespacedName, remaining)
+		assert.NoError(t, getErr)
+		return res, radosgwCalls, remaining, err
+	}
+
+	rootPoolFlag := "--rgw-zone-root-pool=.rgw.root:" + realmName
+
+	t.Run("recorded namespace routes cleanup to the isolated root", func(t *testing.T) {
+		res, calls, remaining, err := run(t, map[string]string{rootPoolNamespaceAnnotation: realmName}, zoneGroupGetJSON, nil)
+		assert.NoError(t, err)
+		assert.Equal(t, reconcile.Result{}, res)
+		assert.NotEmpty(t, calls)
+		for _, args := range calls {
+			assert.Contains(t, args, rootPoolFlag, "radosgw-admin call %v must target the recorded root pool namespace", args)
+		}
+		// Successful deletion removed the finalizer the reconciler manages (the computed name,
+		// see the seeding comment above); only the production finalizer remains.
+		assert.Equal(t, []string{"cephobjectzone.ceph.rook.io"}, remaining.Finalizers)
+	})
+
+	t.Run("no recorded namespace falls back to the shared root", func(t *testing.T) {
+		res, calls, remaining, err := run(t, nil, zoneGroupGetJSON, nil)
+		assert.NoError(t, err)
+		assert.Equal(t, reconcile.Result{}, res)
+		assert.NotEmpty(t, calls, "shared-root cleanup must still run for zones without a recorded namespace")
+		for _, args := range calls {
+			for _, arg := range args {
+				assert.NotContains(t, arg, "-root-pool=", "radosgw-admin call %v must target the shared root", args)
+			}
+		}
+		assert.Equal(t, []string{"cephobjectzone.ceph.rook.io"}, remaining.Finalizers)
+	})
+
+	t.Run("dependent stores still block deletion", func(t *testing.T) {
+		dependentStore := &cephv1.CephObjectStore{
+			ObjectMeta: metav1.ObjectMeta{Name: "store-a", Namespace: namespace},
+			Spec:       cephv1.ObjectStoreSpec{Zone: cephv1.ZoneSpec{Name: name}},
+		}
+		res, calls, remaining, _ := run(t, map[string]string{rootPoolNamespaceAnnotation: realmName}, zoneGroupContainsZoneJSON, dependentStore)
+		assert.Equal(t, opcontroller.WaitForRequeueIfFinalizerBlocked, res)
+		for _, args := range calls {
+			assert.NotEqual(t, "delete", args[1], "no deletion command may run while a store depends on the zone: %v", args)
+			assert.NotEqual(t, "remove", args[1], "no removal command may run while a store depends on the zone: %v", args)
+		}
+		// The finalizer must survive so the zone cannot vanish under the dependent store.
+		assert.ElementsMatch(t, []string{"cephobjectzone.ceph.rook.io", ".ceph.rook.io"}, remaining.Finalizers)
 	})
 }
