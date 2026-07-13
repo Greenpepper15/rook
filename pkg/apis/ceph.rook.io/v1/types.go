@@ -1789,6 +1789,7 @@ type CephObjectStoreList struct {
 // ObjectStoreSpec represent the spec of a pool
 // +kubebuilder:validation:XValidation:rule="!(has(self.defaultRealm) && self.defaultRealm == true && has(self.zone) && size(self.zone.name) > 0)",message="defaultRealm must not be true when zone.name is set (multisite configuration)"
 // +kubebuilder:validation:XValidation:rule="!(has(self.isolatedRootPool) && self.isolatedRootPool == true && has(self.zone) && size(self.zone.name) > 0)",message="isolatedRootPool must not be true when zone.name is set (multisite); set isolatedRootPool on the CephObjectRealm instead"
+// +kubebuilder:validation:XValidation:rule="(has(self.isolatedRootPool) ? self.isolatedRootPool : false) == (has(oldSelf.isolatedRootPool) ? oldSelf.isolatedRootPool : false)",message="isolatedRootPool is immutable"
 type ObjectStoreSpec struct {
 	// The metadata pool settings
 	// +optional
@@ -1869,7 +1870,6 @@ type ObjectStoreSpec struct {
 	// isolatedRootPool on the CephObjectRealm instead. This has no effect on external object stores
 	// (spec.gateway.externalRgwEndpoints): Rook runs no RGW there, so the external gateway's own
 	// configuration controls its root pool.
-	// +kubebuilder:validation:XValidation:message="isolatedRootPool is immutable",rule="self == oldSelf"
 	// +optional
 	IsolatedRootPool bool `json:"isolatedRootPool,omitempty"`
 }
@@ -2533,6 +2533,7 @@ type CephObjectRealmList struct {
 }
 
 // ObjectRealmSpec represent the spec of an ObjectRealm
+// +kubebuilder:validation:XValidation:rule="(has(self.isolatedRootPool) ? self.isolatedRootPool : false) == (has(oldSelf.isolatedRootPool) ? oldSelf.isolatedRootPool : false)",message="isolatedRootPool is immutable"
 type ObjectRealmSpec struct {
 	Pull PullSpec `json:"pull,omitempty"`
 
@@ -2545,7 +2546,6 @@ type ObjectRealmSpec struct {
 	// the un-namespaced `.rgw.root` with every other realm in the Ceph cluster. The zonegroup,
 	// zone, and object store controllers for this realm follow this setting. Only applies to
 	// newly created (or pulled) realms: existing RGW topology cannot be relocated.
-	// +kubebuilder:validation:XValidation:message="isolatedRootPool is immutable",rule="self == oldSelf"
 	// +optional
 	IsolatedRootPool bool `json:"isolatedRootPool,omitempty"`
 }

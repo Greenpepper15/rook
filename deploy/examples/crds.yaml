@@ -12598,9 +12598,6 @@ spec:
                     zone, and object store controllers for this realm follow this setting. Only applies to
                     newly created (or pulled) realms: existing RGW topology cannot be relocated.
                   type: boolean
-                  x-kubernetes-validations:
-                    - message: isolatedRootPool is immutable
-                      rule: self == oldSelf
                 pull:
                   description: PullSpec represents the pulling specification of a Ceph Object Storage Gateway Realm
                   properties:
@@ -12609,6 +12606,9 @@ spec:
                       type: string
                   type: object
               type: object
+              x-kubernetes-validations:
+                - message: isolatedRootPool is immutable
+                  rule: '(has(self.isolatedRootPool) ? self.isolatedRootPool : false) == (has(oldSelf.isolatedRootPool) ? oldSelf.isolatedRootPool : false)'
             status:
               description: Status represents the status of an object
               properties:
@@ -14541,9 +14541,6 @@ spec:
                     (spec.gateway.externalRgwEndpoints): Rook runs no RGW there, so the external gateway's own
                     configuration controls its root pool.
                   type: boolean
-                  x-kubernetes-validations:
-                    - message: isolatedRootPool is immutable
-                      rule: self == oldSelf
                 metadataPool:
                   description: The metadata pool settings
                   nullable: true
@@ -15017,6 +15014,8 @@ spec:
                   rule: '!(has(self.defaultRealm) && self.defaultRealm == true && has(self.zone) && size(self.zone.name) > 0)'
                 - message: isolatedRootPool must not be true when zone.name is set (multisite); set isolatedRootPool on the CephObjectRealm instead
                   rule: '!(has(self.isolatedRootPool) && self.isolatedRootPool == true && has(self.zone) && size(self.zone.name) > 0)'
+                - message: isolatedRootPool is immutable
+                  rule: '(has(self.isolatedRootPool) ? self.isolatedRootPool : false) == (has(oldSelf.isolatedRootPool) ? oldSelf.isolatedRootPool : false)'
             status:
               description: ObjectStoreStatus represents the status of a Ceph Object Store resource
               properties:
