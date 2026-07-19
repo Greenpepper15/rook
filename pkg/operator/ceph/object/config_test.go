@@ -286,37 +286,55 @@ func Test_clusterConfig_generateMonConfigOptions(t *testing.T) {
 	}
 
 	tests := []struct {
-		name            string // test name
-		objectStoreSpec *cephv1.ObjectStoreSpec
-		want            map[string]string
-		wantErr         bool
+		name              string // test name
+		objectStoreSpec   *cephv1.ObjectStoreSpec
+		rootPoolNamespace string
+		want              map[string]string
+		wantErr           bool
 	}{
-		{"empty spec", &cephv1.ObjectStoreSpec{}, defaultConfigs, false},
+		{"empty spec", &cephv1.ObjectStoreSpec{}, "", defaultConfigs, false},
 		{"multisite sync enabled", &cephv1.ObjectStoreSpec{
 			Gateway: cephv1.GatewaySpec{DisableMultisiteSyncTraffic: true},
-		}, overlayOnDefaultConfigs("rgw_run_sync_thread", "false"), false},
+		}, "", overlayOnDefaultConfigs("rgw_run_sync_thread", "false"), false},
 		{"empty rgwConfig", &cephv1.ObjectStoreSpec{
 			Gateway: cephv1.GatewaySpec{RgwConfig: map[string]string{}},
-		}, defaultConfigs, false},
+		}, "", defaultConfigs, false},
 		{"one add rgwConfig", &cephv1.ObjectStoreSpec{
 			Gateway: cephv1.GatewaySpec{RgwConfig: map[string]string{"one": "add"}},
-		}, overlayOnDefaultConfigs("one", "add"), false},
+		}, "", overlayOnDefaultConfigs("one", "add"), false},
 		{"two add rgwConfig", &cephv1.ObjectStoreSpec{
 			Gateway: cephv1.GatewaySpec{RgwConfig: map[string]string{"one": "add", "two": "add"}},
-		}, overlayOnDefaultConfigs("one", "add", "two", "add"), false},
+		}, "", overlayOnDefaultConfigs("one", "add", "two", "add"), false},
 		{"one add one modify rgwConfig", &cephv1.ObjectStoreSpec{
 			Gateway: cephv1.GatewaySpec{RgwConfig: map[string]string{"one": "add", "rgw_enable_usage_log": "false"}},
-		}, overlayOnDefaultConfigs("one", "add", "rgw_enable_usage_log", "false"), false},
+		}, "", overlayOnDefaultConfigs("one", "add", "rgw_enable_usage_log", "false"), false},
 		{"rgwCommandFlags set", &cephv1.ObjectStoreSpec{
 			Gateway: cephv1.GatewaySpec{RgwCommandFlags: map[string]string{"one": "add", "rgw_enable_usage_log": "false"}},
-		}, defaultConfigs, false}, // verifies rgwCommandFlags don't affect mon config store
+		}, "", defaultConfigs, false}, // verifies rgwCommandFlags don't affect mon config store
 		{"test all configs", &cephv1.ObjectStoreSpec{
 			Gateway: cephv1.GatewaySpec{
 				DisableMultisiteSyncTraffic: true,
 				RgwConfig:                   map[string]string{"one": "add", "rgw_enable_usage_log": "false"},
 				RgwCommandFlags:             map[string]string{"two": "add", "rgw_zone": "bob"},
 			},
-		}, overlayOnDefaultConfigs("rgw_run_sync_thread", "false", "one", "add", "rgw_enable_usage_log", "false"), false},
+		}, "", overlayOnDefaultConfigs("rgw_run_sync_thread", "false", "one", "add", "rgw_enable_usage_log", "false"), false},
+		// downgrade backstop: the four root pool options are persisted in the daemon's mon config
+		// section so pods rendered by an older operator (no CLI flags) keep the isolated root
+		{"isolated root pool", &cephv1.ObjectStoreSpec{}, "my-store", overlayOnDefaultConfigs(
+			"rgw_realm_root_pool", ".rgw.root:my-store",
+			"rgw_zonegroup_root_pool", ".rgw.root:my-store",
+			"rgw_zone_root_pool", ".rgw.root:my-store",
+			"rgw_period_root_pool", ".rgw.root:my-store",
+		), false},
+		{"isolated root pool wins over user rgwConfig", &cephv1.ObjectStoreSpec{
+			Gateway: cephv1.GatewaySpec{RgwConfig: map[string]string{"rgw_realm_root_pool": "other-pool", "one": "add"}},
+		}, "my-store", overlayOnDefaultConfigs(
+			"one", "add",
+			"rgw_realm_root_pool", ".rgw.root:my-store",
+			"rgw_zonegroup_root_pool", ".rgw.root:my-store",
+			"rgw_zone_root_pool", ".rgw.root:my-store",
+			"rgw_period_root_pool", ".rgw.root:my-store",
+		), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -326,11 +344,12 @@ func Test_clusterConfig_generateMonConfigOptions(t *testing.T) {
 			cos.Namespace = "ns"
 			cos.Name = "my-store"
 			rgwConfig := &rgwConfig{
-				ResourceName: "rook-ceph-rgw-my-store-a",
-				DaemonID:     "my-store-a",
-				Realm:        "realm",
-				ZoneGroup:    "zone-group",
-				Zone:         "zone",
+				ResourceName:      "rook-ceph-rgw-my-store-a",
+				DaemonID:          "my-store-a",
+				Realm:             "realm",
+				ZoneGroup:         "zone-group",
+				Zone:              "zone",
+				RootPoolNamespace: tt.rootPoolNamespace,
 			}
 
 			c := &clusterConfig{

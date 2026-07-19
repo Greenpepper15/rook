@@ -240,8 +240,11 @@ Operational notes:
   `.rgw.root` and will not display isolated realms. Dashboard screens and Rook features based on
   the RGW admin ops API are unaffected.
 * Do not downgrade the Rook operator below the release that introduced this setting while object
-  stores with `isolatedRootPool` exist: an older operator would re-create their topology in the
-  shared `.rgw.root`.
+  stores with `isolatedRootPool` exist. As a backstop, Rook also persists the root pool overrides
+  in each gateway's section of the mon config database (the pod command line takes precedence),
+  so gateways redeployed by an older operator keep resolving the isolated topology. The older
+  operator will still create a conflicting realm in the shared `.rgw.root`, which the upgraded
+  operator refuses to reconcile until those records are removed.
 * When the last object store is deleted (with `preservePoolsOnDelete: false`), Rook deletes the
   `.rgw.root` pool only if no other RADOS namespace of the pool still holds topology records, so
   a store sharing `.rgw.root` can never remove the topology of stores isolated into namespaces

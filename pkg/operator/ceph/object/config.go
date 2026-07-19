@@ -314,6 +314,19 @@ func (c *clusterConfig) generateMonConfigOptions(rgwConfig *rgwConfig) (map[stri
 		configOptions[flag] = string(secretVal)
 	}
 
+	// isolatedRootPool: the daemon normally resolves its root pool namespace from the pod CLI
+	// args, which outrank these keys; they are the backstop for pod templates rendered by an
+	// older operator (downgrade), which carry no root-pool flags. Written last so user-specified
+	// overrides cannot silently un-isolate the daemon in the mon config store.
+	if rgwConfig.RootPoolNamespace != "" {
+		for flag, val := range rootPoolMonConfigOptions(rgwConfig.RootPoolNamespace) {
+			if currVal, ok := configOptions[flag]; ok && currVal != val {
+				log.NamedWarning(nsName, logger, "ignoring user-specified value %q for RGW config option %q: the object store uses an isolated root pool", currVal, flag)
+			}
+			configOptions[flag] = val
+		}
+	}
+
 	return configOptions, nil
 }
 

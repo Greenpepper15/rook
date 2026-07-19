@@ -51,6 +51,15 @@ func TestRootPoolArgs(t *testing.T) {
 	}, rootPoolArgs("my-store"))
 }
 
+func TestRootPoolMonConfigOptions(t *testing.T) {
+	assert.Equal(t, map[string]string{
+		"rgw_realm_root_pool":     ".rgw.root:my-store",
+		"rgw_zonegroup_root_pool": ".rgw.root:my-store",
+		"rgw_zone_root_pool":      ".rgw.root:my-store",
+		"rgw_period_root_pool":    ".rgw.root:my-store",
+	}, rootPoolMonConfigOptions("my-store"))
+}
+
 func TestValidateIsolatedRootPool(t *testing.T) {
 	sharedPools := cephv1.ObjectSharedPoolsSpec{MetadataPoolName: "meta-pool", DataPoolName: "data-pool"}
 

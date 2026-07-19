@@ -18,6 +18,7 @@ package object
 
 import (
 	"fmt"
+	"strings"
 	"syscall"
 
 	"github.com/pkg/errors"
@@ -46,17 +47,40 @@ func RootPoolNamespaceForRealm(realm *cephv1.CephObjectRealm) string {
 	return ""
 }
 
+// rootPoolOptionNames are the four config options through which RGW resolves the pool holding
+// each topology record type; Ceph parses their values as `pool[:namespace]`.
+var rootPoolOptionNames = []string{
+	"rgw_realm_root_pool",
+	"rgw_zonegroup_root_pool",
+	"rgw_zone_root_pool",
+	"rgw_period_root_pool",
+}
+
 // rootPoolArgs returns the CLI overrides pointing every RGW topology record type at the realm's
 // RADOS namespace within `.rgw.root`. The same --key=value form is understood by radosgw-admin
 // and by the radosgw daemon.
 func rootPoolArgs(rootPoolNamespace string) []string {
 	val := rootPool + ":" + rootPoolNamespace
-	return []string{
-		"--rgw-realm-root-pool=" + val,
-		"--rgw-zonegroup-root-pool=" + val,
-		"--rgw-zone-root-pool=" + val,
-		"--rgw-period-root-pool=" + val,
+	args := make([]string, 0, len(rootPoolOptionNames))
+	for _, option := range rootPoolOptionNames {
+		args = append(args, "--"+strings.ReplaceAll(option, "_", "-")+"="+val)
 	}
+	return args
+}
+
+// rootPoolMonConfigOptions returns the same root pool overrides in mon config store form. They
+// are written to the RGW daemon's config section as a backstop for operator downgrades: the pod
+// CLI args outrank the mon config database while they are present, but a pod template rendered
+// by an older Rook operator carries no root-pool flags, and without these keys its daemons would
+// resolve the shared `.rgw.root` and attach to whatever topology that operator (re-)creates
+// there. The keys share the daemon config section's lifecycle (removed with the daemon).
+func rootPoolMonConfigOptions(rootPoolNamespace string) map[string]string {
+	val := rootPool + ":" + rootPoolNamespace
+	options := make(map[string]string, len(rootPoolOptionNames))
+	for _, option := range rootPoolOptionNames {
+		options[option] = val
+	}
+	return options
 }
 
 // validateIsolatedRootPool checks the CephObjectStore constraints for spec.isolatedRootPool.
