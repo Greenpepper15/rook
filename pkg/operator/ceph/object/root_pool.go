@@ -107,16 +107,31 @@ func canDeleteRootPool(objContext *Context) bool {
 	return true
 }
 
-// CheckRealmNotInSharedRoot fails when a realm configured for an isolated root pool already has
-// records in the shared un-namespaced `.rgw.root`: radosgw-admin cannot relocate topology, and
-// re-creating it in the namespace would fork the realm's identity (new UUIDs) away from the
-// records referenced by existing bucket and user metadata. Callers run this only on the
-// about-to-create path, so it costs nothing in steady state.
-func CheckRealmNotInSharedRoot(objContext *Context, realmName string) error {
-	sharedCtx := *objContext
-	sharedCtx.RootPoolNamespace = ""
-	_, err := RunAdminCommandNoMultisite(&sharedCtx, true, "realm", "get", "--rgw-realm="+realmName)
+// CheckRealmLocationConflict fails when a realm about to be created or pulled at the root-pool
+// location implied by the CR spec — the shared un-namespaced `.rgw.root`, or the realm's RADOS
+// namespace when isolatedRootPool is set — already has records at the opposite location:
+// radosgw-admin cannot relocate topology, and proceeding would fork the realm's identity (new
+// UUIDs) away from the records referenced by existing zonegroups, zones, periods, and bucket and
+// user metadata. The namespace key is the realm name by convention, so the opposite location is
+// always derivable from the CR alone. Callers run this only on the about-to-create path, so it
+// costs nothing in steady state. Deleting and re-creating a CR with a different isolatedRootPool
+// value (the CEL immutability rule only guards updates) and an outdated CRD pruning the field
+// both funnel into this refusal instead of silently forking the realm.
+func CheckRealmLocationConflict(objContext *Context, realmName string) error {
+	otherCtx := *objContext
+	otherLocation := "the shared .rgw.root pool"
+	if objContext.RootPoolNamespace == "" {
+		otherCtx.RootPoolNamespace = realmName
+		otherLocation = fmt.Sprintf("RADOS namespace %q of the .rgw.root pool", realmName)
+	} else {
+		otherCtx.RootPoolNamespace = ""
+	}
+
+	_, err := RunAdminCommandNoMultisite(&otherCtx, true, "realm", "get", "--rgw-realm="+realmName)
 	if err == nil {
+		if objContext.RootPoolNamespace == "" {
+			return errors.Errorf("realm %q already has records in %s: existing topology cannot be relocated; re-create the CR with isolatedRootPool: true to adopt the records, or remove them", realmName, otherLocation)
+		}
 		return errors.Errorf("realm %q already exists in the shared .rgw.root pool: isolatedRootPool applies only to newly created realms/object stores, existing topology cannot be relocated", realmName)
 	}
 	// the pod used to exec the command (act as a proxy) is not found/ready yet; let the caller requeue
@@ -126,5 +141,5 @@ func CheckRealmNotInSharedRoot(objContext *Context, realmName string) error {
 	if code, extractErr := exec.ExtractExitCode(err); extractErr == nil && code == int(syscall.ENOENT) {
 		return nil
 	}
-	return errors.Wrapf(err, "failed to check whether realm %q exists in the shared .rgw.root pool", realmName)
+	return errors.Wrapf(err, "failed to check whether realm %q exists in %s", realmName, otherLocation)
 }

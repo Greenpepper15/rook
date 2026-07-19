@@ -214,8 +214,10 @@ spec:
 
 Rook passes the location to the RGW daemons and to all of its own `radosgw-admin` calls
 automatically. The setting is immutable and applies only to newly created object stores: existing
-RGW topology cannot be relocated, and Rook will refuse to provision a store whose realm already
-exists in the shared `.rgw.root`. For multisite setups, set `isolatedRootPool` on the
+RGW topology cannot be relocated, and Rook will refuse to provision a realm whose records already
+exist at the other `.rgw.root` location — in the shared pool when `isolatedRootPool` is set, or in
+the realm's RADOS namespace when it is not (e.g. after deleting and re-creating the CR without the
+setting). For multisite setups, set `isolatedRootPool` on the
 [CephObjectRealm](../../CRDs/Object-Storage/ceph-object-realm-crd.md) instead; the zone group,
 zone, and object store controllers follow the realm's setting.
 

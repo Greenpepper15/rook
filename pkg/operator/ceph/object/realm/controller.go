@@ -244,12 +244,10 @@ func (r *ReconcileObjectRealm) pullCephRealm(realm *cephv1.CephObjectRealm) (rec
 
 	objContext := object.NewContext(r.context, r.clusterInfo, realm.Name)
 	objContext.RootPoolNamespace = object.RootPoolNamespaceForRealm(realm)
-	if objContext.RootPoolNamespace != "" {
-		// the pulled realm is written into its RADOS namespace — refuse if the same realm
-		// already has records in the shared un-namespaced .rgw.root (cannot be relocated)
-		if err := object.CheckRealmNotInSharedRoot(objContext, realm.Name); err != nil {
-			return waitForRequeueIfRealmNotReady, err
-		}
+	// the pulled realm is written to the root-pool location implied by the CR — refuse if the
+	// same realm already has records at the other location (cannot be relocated)
+	if err := object.CheckRealmLocationConflict(objContext, realm.Name); err != nil {
+		return waitForRequeueIfRealmNotReady, err
 	}
 	output, err := object.RunAdminCommandNoMultisite(objContext, false, "realm", "pull", realmArg, urlArg, accessKeyArg, secretKeyArg)
 	if err != nil {
@@ -269,12 +267,10 @@ func (r *ReconcileObjectRealm) createCephRealm(realm *cephv1.CephObjectRealm) (r
 	_, err := object.RunAdminCommandNoMultisite(objContext, true, "realm", "get", realmArg)
 	if err != nil {
 		if code, ok := exec.ExitStatus(err); ok && code == int(syscall.ENOENT) {
-			if objContext.RootPoolNamespace != "" {
-				// about to create the realm in its RADOS namespace — refuse if it already
-				// exists in the shared un-namespaced .rgw.root (cannot be relocated)
-				if err := object.CheckRealmNotInSharedRoot(objContext, realm.Name); err != nil {
-					return reconcile.Result{}, err
-				}
+			// about to create the realm at the root-pool location implied by the CR — refuse if
+			// it already has records at the other location (cannot be relocated)
+			if err := object.CheckRealmLocationConflict(objContext, realm.Name); err != nil {
+				return reconcile.Result{}, err
 			}
 			log.NamedDebug(nsName, logger, "ceph realm not found, running `radosgw-admin realm create`")
 			_, err := object.RunAdminCommandNoMultisite(objContext, false, "realm", "create", realmArg)

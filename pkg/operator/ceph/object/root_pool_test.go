@@ -84,14 +84,14 @@ func TestValidateIsolatedRootPool(t *testing.T) {
 	})
 }
 
-func TestCheckRealmNotInSharedRoot(t *testing.T) {
-	newContext := func(executor *exectest.MockExecutor) *Context {
+func TestCheckRealmLocationConflict(t *testing.T) {
+	newContext := func(executor *exectest.MockExecutor, rootPoolNamespace string) *Context {
 		return &Context{
 			Context:           &clusterd.Context{Executor: executor},
 			clusterInfo:       cephclient.AdminTestClusterInfo("mycluster"),
 			Name:              "my-store",
 			Realm:             "my-store",
-			RootPoolNamespace: "my-store",
+			RootPoolNamespace: rootPoolNamespace,
 		}
 	}
 	hasRootPoolFlag := func(args []string) bool {
@@ -102,16 +102,19 @@ func TestCheckRealmNotInSharedRoot(t *testing.T) {
 		}
 		return false
 	}
+	enoent := func() error {
+		return kexec.CodeExitError{Err: errors.New("exit status 2"), Code: int(syscall.ENOENT)}
+	}
 
-	t.Run("realm absent from shared root", func(t *testing.T) {
+	t.Run("isolated realm absent from shared root", func(t *testing.T) {
 		var captured []string
 		executor := &exectest.MockExecutor{
 			MockExecuteCommandWithTimeout: func(timeout time.Duration, command string, args ...string) (string, error) {
 				captured = args
-				return "", kexec.CodeExitError{Err: errors.New("exit status 2"), Code: int(syscall.ENOENT)}
+				return "", enoent()
 			},
 		}
-		err := CheckRealmNotInSharedRoot(newContext(executor), "my-store")
+		err := CheckRealmLocationConflict(newContext(executor, "my-store"), "my-store")
 		assert.NoError(t, err)
 		// the check must look at the shared, un-namespaced root pool
 		assert.False(t, hasRootPoolFlag(captured))
@@ -120,15 +123,44 @@ func TestCheckRealmNotInSharedRoot(t *testing.T) {
 		assert.Contains(t, captured, "--rgw-realm=my-store")
 	})
 
-	t.Run("realm present in shared root", func(t *testing.T) {
+	t.Run("isolated realm present in shared root", func(t *testing.T) {
 		executor := &exectest.MockExecutor{
 			MockExecuteCommandWithTimeout: func(timeout time.Duration, command string, args ...string) (string, error) {
 				return `{"id": "91b799b2-857d-4c96-8ade-5ceff7c8597e", "name": "my-store"}`, nil
 			},
 		}
-		err := CheckRealmNotInSharedRoot(newContext(executor), "my-store")
+		err := CheckRealmLocationConflict(newContext(executor, "my-store"), "my-store")
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "already exists in the shared .rgw.root")
+	})
+
+	t.Run("shared realm absent from its RADOS namespace", func(t *testing.T) {
+		var captured []string
+		executor := &exectest.MockExecutor{
+			MockExecuteCommandWithTimeout: func(timeout time.Duration, command string, args ...string) (string, error) {
+				captured = args
+				return "", enoent()
+			},
+		}
+		err := CheckRealmLocationConflict(newContext(executor, ""), "my-store")
+		assert.NoError(t, err)
+		// the check must look at the realm's RADOS namespace of the root pool
+		assert.Contains(t, captured, "--rgw-realm-root-pool=.rgw.root:my-store")
+		assert.Contains(t, captured, "realm")
+		assert.Contains(t, captured, "get")
+		assert.Contains(t, captured, "--rgw-realm=my-store")
+	})
+
+	t.Run("shared realm present in its RADOS namespace", func(t *testing.T) {
+		executor := &exectest.MockExecutor{
+			MockExecuteCommandWithTimeout: func(timeout time.Duration, command string, args ...string) (string, error) {
+				return `{"id": "91b799b2-857d-4c96-8ade-5ceff7c8597e", "name": "my-store"}`, nil
+			},
+		}
+		err := CheckRealmLocationConflict(newContext(executor, ""), "my-store")
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), `already has records in RADOS namespace "my-store"`)
+		assert.Contains(t, err.Error(), "isolatedRootPool: true")
 	})
 
 	t.Run("unexpected error", func(t *testing.T) {
@@ -137,7 +169,7 @@ func TestCheckRealmNotInSharedRoot(t *testing.T) {
 				return "", kexec.CodeExitError{Err: errors.New("exit status 5"), Code: 5}
 			},
 		}
-		err := CheckRealmNotInSharedRoot(newContext(executor), "my-store")
+		err := CheckRealmLocationConflict(newContext(executor, "my-store"), "my-store")
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to check whether realm")
 	})

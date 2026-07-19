@@ -213,20 +213,23 @@ func TestCreateCephRealm(t *testing.T) {
 	assert.False(t, res.Requeue)
 }
 
-func TestCreateCephRealmIsolatedRootPool(t *testing.T) {
-	hasRootPoolFlags := func(args []string) bool {
-		for _, arg := range args {
-			if strings.HasPrefix(arg, "--rgw-realm-root-pool=") {
-				return true
-			}
+func hasRootPoolFlags(args []string) bool {
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "--rgw-realm-root-pool=") {
+			return true
 		}
-		return false
 	}
-	// mirrors the error shape of the remote (proxied) executor, which both exec.ExitStatus and
-	// exec.ExtractExitCode understand
-	enoent := func() error {
-		return kexec.CodeExitError{Err: errors.New("command terminated with exit code 2"), Code: int(syscall.ENOENT)}
-	}
+	return false
+}
+
+// mirrors the error shape of the remote (proxied) executor, which both exec.ExitStatus and
+// exec.ExtractExitCode understand
+func radosgwAdminENOENT() error {
+	return kexec.CodeExitError{Err: errors.New("command terminated with exit code 2"), Code: int(syscall.ENOENT)}
+}
+
+func TestCreateCephRealmIsolatedRootPool(t *testing.T) {
+	enoent := radosgwAdminENOENT
 
 	t.Run("realm is created in its namespace after checking the shared root", func(t *testing.T) {
 		r, objectRealm := getObjectRealmAndReconcileObjectRealm(t)
@@ -292,6 +295,80 @@ func TestCreateCephRealmIsolatedRootPool(t *testing.T) {
 		assert.Contains(t, err.Error(), "already exists in the shared .rgw.root")
 		assert.False(t, realmCreated)
 	})
+
+	// regression for the delete + recreate fork: realm records live in the RADOS namespace, the
+	// CR is recreated WITHOUT isolatedRootPool (immutability does not apply on create) — the
+	// realm must not be re-created in the shared root
+	t.Run("creation is refused when the realm has records in its RADOS namespace", func(t *testing.T) {
+		r, objectRealm := getObjectRealmAndReconcileObjectRealm(t)
+		assert.False(t, objectRealm.Spec.IsolatedRootPool)
+
+		realmCreated := false
+		r.context.Executor = &exectest.MockExecutor{
+			MockExecuteCommandWithTimeout: func(timeout time.Duration, command string, args ...string) (string, error) {
+				if args[0] == "realm" && args[1] == "get" {
+					if hasRootPoolFlags(args) {
+						// leftover records of an earlier isolated life of this realm
+						return realmGetJSON, nil
+					}
+					// nothing in the shared un-namespaced .rgw.root
+					return "", enoent()
+				}
+				if args[0] == "realm" && args[1] == "create" {
+					realmCreated = true
+					return realmGetJSON, nil
+				}
+				return "", nil
+			},
+		}
+
+		_, err := r.createCephRealm(objectRealm)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "already has records in RADOS namespace")
+		assert.False(t, realmCreated)
+	})
+}
+
+func TestPullCephRealmLocationConflict(t *testing.T) {
+	ctx := context.TODO()
+	r, objectRealm := getObjectRealmAndReconcileObjectRealm(t)
+	assert.False(t, objectRealm.Spec.IsolatedRootPool)
+
+	secrets := map[string][]byte{
+		"access-key": []byte("akey"),
+		"secret-key": []byte("skey"),
+	}
+	secret := &v1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      objectRealm.Name + "-keys",
+			Namespace: objectRealm.Namespace,
+		},
+		Data: secrets,
+		Type: k8sutil.RookType,
+	}
+	_, err := r.context.Clientset.CoreV1().Secrets(objectRealm.Namespace).Create(ctx, secret, metav1.CreateOptions{})
+	assert.NoError(t, err)
+	objectRealm.Spec.Pull.Endpoint = "http://10.2.1.164:80"
+
+	realmPulled := false
+	r.context.Executor = &exectest.MockExecutor{
+		MockExecuteCommandWithTimeout: func(timeout time.Duration, command string, args ...string) (string, error) {
+			if args[0] == "realm" && args[1] == "get" && hasRootPoolFlags(args) {
+				// leftover records of an earlier isolated life of this realm
+				return realmGetJSON, nil
+			}
+			if args[0] == "realm" && args[1] == "pull" {
+				realmPulled = true
+				return realmGetJSON, nil
+			}
+			return "", nil
+		},
+	}
+
+	_, err = r.pullCephRealm(objectRealm)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "already has records in RADOS namespace")
+	assert.False(t, realmPulled)
 }
 
 func TestRootPoolNamespacePopulation(t *testing.T) {
@@ -329,6 +406,10 @@ func getObjectRealmAndReconcileObjectRealm(t *testing.T) (*ReconcileObjectRealm,
 		},
 		MockExecuteCommandWithTimeout: func(timeout time.Duration, command string, args ...string) (string, error) {
 			if args[0] == "realm" && args[1] == "get" {
+				if hasRootPoolFlags(args) {
+					// no records in any .rgw.root RADOS namespace
+					return "", radosgwAdminENOENT()
+				}
 				return realmGetJSON, nil
 			}
 			return "", nil

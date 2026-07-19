@@ -36,6 +36,8 @@ spec:
     are stored in a RADOS namespace of the `.rgw.root` pool named after the realm, instead of sharing the
     un-namespaced `.rgw.root` with every other realm in the Ceph cluster. The zone group, zone, and object store
     controllers for this realm follow this setting automatically. The setting is immutable and only applies to
-    newly created (or pulled) realms: existing RGW topology cannot be relocated.
+    newly created (or pulled) realms: existing RGW topology cannot be relocated, and Rook refuses to reconcile
+    a realm whose records already exist at the other `.rgw.root` location (e.g. after deleting and re-creating
+    the CR with a different `isolatedRootPool` value).
     See [Isolating the RGW topology pool](../../Storage-Configuration/Object-Storage-RGW/object-storage.md#isolating-the-rgw-topology-pool)
     for details and operational notes.

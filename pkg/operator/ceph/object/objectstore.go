@@ -447,10 +447,11 @@ func createMultisiteConfigurations(objContext *Context, store *cephv1.CephObject
 		return errors.Wrapf(getConfigErr, "'radosgw-admin %q get' failed with code %q, for reason %q", configType, code, output)
 	}
 
-	// isolatedRootPool: about to create the realm in its RADOS namespace — refuse if the same
-	// realm already has records in the shared un-namespaced .rgw.root (cannot be relocated)
-	if configType == "realm" && objContext.RootPoolNamespace != "" {
-		if err := CheckRealmNotInSharedRoot(objContext, objContext.Realm); err != nil {
+	// isolatedRootPool: about to create the realm — refuse if the same realm already has records
+	// at the other possible .rgw.root location (shared pool vs its RADOS namespace); existing
+	// topology cannot be relocated
+	if configType == "realm" {
+		if err := CheckRealmLocationConflict(objContext, objContext.Realm); err != nil {
 			return err
 		}
 	}
