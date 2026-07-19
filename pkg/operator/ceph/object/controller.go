@@ -470,6 +470,9 @@ func (r *ReconcileCephObjectStore) reconcile(request reconcile.Request) (reconci
 		}
 	}
 
+	// warn when the installed CRD would have silently pruned spec.isolatedRootPool at admission
+	WarnIfCRDPrunesIsolatedRootPool(r.opManagerContext, r.context, r.recorder, cephObjectStore, cephObjectStore.Namespace, cephObjectStore.Name, ObjectStoreCRDName)
+
 	// validate the store settings
 	if err := r.validateStore(cephObjectStore); err != nil {
 		return reconcile.Result{}, *cephObjectStore, errors.Wrapf(err, "invalid object store %q arguments", cephObjectStore.Name)

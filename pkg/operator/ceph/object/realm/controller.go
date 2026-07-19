@@ -187,6 +187,9 @@ func (r *ReconcileObjectRealm) reconcile(request reconcile.Request) (reconcile.R
 		return reconcile.Result{}, *cephObjectRealm, errors.Wrapf(err, "invalid CephObjectRealm CR %q", cephObjectRealm.Name)
 	}
 
+	// warn when the installed CRD would have silently pruned spec.isolatedRootPool at admission
+	object.WarnIfCRDPrunesIsolatedRootPool(r.opManagerContext, r.context, r.recorder, cephObjectRealm, cephObjectRealm.Namespace, cephObjectRealm.Name, object.ObjectRealmCRDName)
+
 	// Start object reconciliation, updating status for this
 	r.updateStatus(k8sutil.ObservedGenerationNotAvailable, request.NamespacedName, k8sutil.ReconcilingStatus)
 

@@ -30,7 +30,10 @@ import (
 	cephclient "github.com/rook/rook/pkg/daemon/ceph/client"
 	exectest "github.com/rook/rook/pkg/util/exec/test"
 	"github.com/stretchr/testify/assert"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apiextensionsfake "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/fake"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/events"
 	kexec "k8s.io/utils/exec"
 )
 
@@ -181,6 +184,89 @@ func TestCheckRealmLocationConflict(t *testing.T) {
 		err := CheckRealmLocationConflict(newContext(executor, "my-store"), "my-store")
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to check whether realm")
+	})
+}
+
+func TestWarnIfCRDPrunesIsolatedRootPool(t *testing.T) {
+	ctx := context.TODO()
+	store := &cephv1.CephObjectStore{ObjectMeta: metav1.ObjectMeta{Name: "my-store", Namespace: "rook-ceph"}}
+
+	newCRD := func(name string, specProps map[string]apiextensionsv1.JSONSchemaProps) *apiextensionsv1.CustomResourceDefinition {
+		return &apiextensionsv1.CustomResourceDefinition{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+				Versions: []apiextensionsv1.CustomResourceDefinitionVersion{{
+					Name:   "v1",
+					Served: true,
+					Schema: &apiextensionsv1.CustomResourceValidation{
+						OpenAPIV3Schema: &apiextensionsv1.JSONSchemaProps{
+							Properties: map[string]apiextensionsv1.JSONSchemaProps{
+								"spec": {Properties: specProps},
+							},
+						},
+					},
+				}},
+			},
+		}
+	}
+	receivedEvent := func(recorder *events.FakeRecorder) string {
+		select {
+		case e := <-recorder.Events:
+			return e
+		default:
+			return ""
+		}
+	}
+
+	// distinct CRD names per subtest: positive results are cached package-wide
+	t.Run("CRD contains the field: no warning, result cached", func(t *testing.T) {
+		crdName := "with-field.test.rook.io"
+		clusterdCtx := &clusterd.Context{ApiExtensionsClient: apiextensionsfake.NewSimpleClientset(
+			newCRD(crdName, map[string]apiextensionsv1.JSONSchemaProps{"isolatedRootPool": {Type: "boolean"}}),
+		)}
+		recorder := events.NewFakeRecorder(5)
+
+		WarnIfCRDPrunesIsolatedRootPool(ctx, clusterdCtx, recorder, store, store.Namespace, store.Name, crdName)
+		assert.Equal(t, "", receivedEvent(recorder))
+
+		// cached: even with the CRD gone, no re-check and no warning
+		clusterdCtx.ApiExtensionsClient = apiextensionsfake.NewSimpleClientset()
+		WarnIfCRDPrunesIsolatedRootPool(ctx, clusterdCtx, recorder, store, store.Namespace, store.Name, crdName)
+		assert.Equal(t, "", receivedEvent(recorder))
+	})
+
+	t.Run("CRD lacks the field: warning event on every reconcile until fixed", func(t *testing.T) {
+		crdName := "without-field.test.rook.io"
+		clusterdCtx := &clusterd.Context{ApiExtensionsClient: apiextensionsfake.NewSimpleClientset(
+			newCRD(crdName, map[string]apiextensionsv1.JSONSchemaProps{"gateway": {Type: "object"}}),
+		)}
+		recorder := events.NewFakeRecorder(5)
+
+		WarnIfCRDPrunesIsolatedRootPool(ctx, clusterdCtx, recorder, store, store.Namespace, store.Name, crdName)
+		event := receivedEvent(recorder)
+		assert.Contains(t, event, "Warning")
+		assert.Contains(t, event, "isolatedRootPool")
+		assert.Contains(t, event, crdName)
+
+		// negative results are not cached: updating the CRDs clears the warning immediately
+		clusterdCtx.ApiExtensionsClient = apiextensionsfake.NewSimpleClientset(
+			newCRD(crdName, map[string]apiextensionsv1.JSONSchemaProps{"isolatedRootPool": {Type: "boolean"}}),
+		)
+		WarnIfCRDPrunesIsolatedRootPool(ctx, clusterdCtx, recorder, store, store.Namespace, store.Name, crdName)
+		assert.Equal(t, "", receivedEvent(recorder))
+	})
+
+	t.Run("CRD not readable: fail open without warning", func(t *testing.T) {
+		clusterdCtx := &clusterd.Context{ApiExtensionsClient: apiextensionsfake.NewSimpleClientset()}
+		recorder := events.NewFakeRecorder(5)
+		WarnIfCRDPrunesIsolatedRootPool(ctx, clusterdCtx, recorder, store, store.Namespace, store.Name, "absent.test.rook.io")
+		assert.Equal(t, "", receivedEvent(recorder))
+	})
+
+	t.Run("no CRD client: fail open without warning", func(t *testing.T) {
+		recorder := events.NewFakeRecorder(5)
+		WarnIfCRDPrunesIsolatedRootPool(ctx, &clusterd.Context{}, recorder, store, store.Namespace, store.Name, "nil-client.test.rook.io")
+		assert.Equal(t, "", receivedEvent(recorder))
 	})
 }
 

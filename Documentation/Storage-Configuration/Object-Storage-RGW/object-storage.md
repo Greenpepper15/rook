@@ -239,6 +239,12 @@ Operational notes:
 * The Ceph mgr modules (e.g. the dashboard's multisite topology view) resolve the default
   `.rgw.root` and will not display isolated realms. Dashboard screens and Rook features based on
   the RGW admin ops API are unaffected.
+* `isolatedRootPool` requires the CRDs shipped with this Rook release. The Kubernetes API server
+  silently drops fields unknown to the installed CRD schema, so apply the updated CRDs before the
+  operator upgrade (the standard Rook upgrade order); with outdated CRDs the field is dropped at
+  admission and the store or realm is provisioned without isolation. The operator detects outdated
+  CRDs and warns in its log and with a Warning event on the affected `CephObjectStore` and
+  `CephObjectRealm` resources.
 * Do not downgrade the Rook operator below the release that introduced this setting while object
   stores with `isolatedRootPool` exist. As a backstop, Rook also persists the root pool overrides
   in each gateway's section of the mon config database (the pod command line takes precedence),

@@ -17,16 +17,24 @@ limitations under the License.
 package object
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/pkg/errors"
 	cephv1 "github.com/rook/rook/pkg/apis/ceph.rook.io/v1"
+	"github.com/rook/rook/pkg/clusterd"
 	cephclient "github.com/rook/rook/pkg/daemon/ceph/client"
+	opcontroller "github.com/rook/rook/pkg/operator/ceph/controller"
 	"github.com/rook/rook/pkg/util/exec"
 	"github.com/rook/rook/pkg/util/log"
+	v1 "k8s.io/api/core/v1"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/events"
 )
 
 // RGW keeps its realm/zonegroup/zone/period records in the pools named by the four
@@ -166,4 +174,64 @@ func CheckRealmLocationConflict(objContext *Context, realmName string) error {
 		return nil
 	}
 	return errors.Wrapf(err, "failed to check whether realm %q exists in %s", realmName, otherLocation)
+}
+
+// Names of the CRDs whose schemas must contain spec.isolatedRootPool for the field to survive
+// admission.
+const (
+	ObjectStoreCRDName = "cephobjectstores.ceph.rook.io"
+	ObjectRealmCRDName = "cephobjectrealms.ceph.rook.io"
+)
+
+// isolatedRootPoolCRDSupported caches POSITIVE schema-check results per CRD name for the
+// operator's lifetime. Negative results are not cached, so applying updated CRDs clears the
+// warning on the next reconcile without an operator restart.
+var isolatedRootPoolCRDSupported sync.Map
+
+// WarnIfCRDPrunesIsolatedRootPool warns — in the operator log and with a Warning event on the
+// object being reconciled — when the installed CRD's schema predates spec.isolatedRootPool. The
+// API server silently prunes fields unknown to the schema, so on such a cluster a user setting
+// isolatedRootPool gets an un-isolated store or realm with no error anywhere; the operator
+// cannot recover the pruned field (absent and never-set are indistinguishable in the stored
+// object), so it warns about the skew condition itself. Failures to read the CRD (e.g.
+// restricted RBAC) fail open: a diagnostic must never block reconciliation.
+func WarnIfCRDPrunesIsolatedRootPool(ctx context.Context, clusterdContext *clusterd.Context, recorder events.EventRecorder, obj runtime.Object, namespace, name, crdName string) {
+	if crdSupportsIsolatedRootPool(ctx, clusterdContext, crdName) {
+		return
+	}
+	msg := fmt.Sprintf("the installed CRD %q predates spec.isolatedRootPool: if the field was set, the API server silently dropped it at admission; apply the updated CRDs (before the operator, per the standard upgrade order) for it to take effect", crdName)
+	log.NamedWarning(opcontroller.NsName(namespace, name), logger, "%s", msg)
+	if recorder != nil {
+		recorder.Eventf(obj, nil, v1.EventTypeWarning, "OutdatedCRD", "ReconcileStarted", "%s", msg)
+	}
+}
+
+func crdSupportsIsolatedRootPool(ctx context.Context, clusterdContext *clusterd.Context, crdName string) bool {
+	if _, ok := isolatedRootPoolCRDSupported.Load(crdName); ok {
+		return true
+	}
+	if clusterdContext.ApiExtensionsClient == nil {
+		// contexts without a CRD client (external tooling, tests) cannot be checked; fail open
+		return true
+	}
+	crd, err := clusterdContext.ApiExtensionsClient.ApiextensionsV1().CustomResourceDefinitions().Get(ctx, crdName, metav1.GetOptions{})
+	if err != nil {
+		logger.Debugf("skipping the isolatedRootPool schema check: failed to get CRD %q. %v", crdName, err)
+		return true
+	}
+	for i := range crd.Spec.Versions {
+		version := &crd.Spec.Versions[i]
+		if !version.Served || version.Schema == nil || version.Schema.OpenAPIV3Schema == nil {
+			continue
+		}
+		spec, ok := version.Schema.OpenAPIV3Schema.Properties["spec"]
+		if !ok {
+			continue
+		}
+		if _, ok := spec.Properties["isolatedRootPool"]; ok {
+			isolatedRootPoolCRDSupported.Store(crdName, struct{}{})
+			return true
+		}
+	}
+	return false
 }
