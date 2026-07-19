@@ -240,6 +240,10 @@ Operational notes:
 * Do not downgrade the Rook operator below the release that introduced this setting while object
   stores with `isolatedRootPool` exist: an older operator would re-create their topology in the
   shared `.rgw.root`.
+* When the last object store is deleted (with `preservePoolsOnDelete: false`), Rook deletes the
+  `.rgw.root` pool only if no other RADOS namespace of the pool still holds topology records, so
+  a store sharing `.rgw.root` can never remove the topology of stores isolated into namespaces
+  (and vice versa).
 * `isolatedRootPool` has no effect on external object stores (`spec.gateway.externalRgwEndpoints`):
   Rook runs no RGW daemon and issues no `radosgw-admin` commands for them, so the external gateway's
   own configuration controls its root pool.

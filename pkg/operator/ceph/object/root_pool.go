@@ -22,7 +22,9 @@ import (
 
 	"github.com/pkg/errors"
 	cephv1 "github.com/rook/rook/pkg/apis/ceph.rook.io/v1"
+	cephclient "github.com/rook/rook/pkg/daemon/ceph/client"
 	"github.com/rook/rook/pkg/util/exec"
+	"github.com/rook/rook/pkg/util/log"
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
@@ -71,6 +73,38 @@ func validateIsolatedRootPool(spec *cephv1.ObjectStoreSpec) error {
 		return fmt.Errorf("isolatedRootPool requires sharedPools (metadataPoolName/dataPoolName or a default pool placement)")
 	}
 	return nil
+}
+
+// canDeleteRootPool reports whether deleting the shared `.rgw.root` pool is safe while tearing
+// down this object store. The lastStore signal is computed from `realm list`, which sees only
+// the caller's own root-pool namespace: a store on the shared (default) namespace cannot see
+// realms isolated into RADOS namespaces, and an isolated store sees nothing but itself.
+// Deleting the pool destroys every namespace in it, so require that no namespace other than the
+// caller's own still holds objects. Records remaining in the caller's own namespace (period and
+// default-marker residue left behind by deleteRealm) never block deletion — removing the pool
+// is how that residue is cleaned up for the last store.
+func canDeleteRootPool(objContext *Context) bool {
+	namespaces, err := cephclient.RadosNamespacesWithObjects(objContext.Context, objContext.clusterInfo, rootPool)
+	if err != nil {
+		log.NamedWarning(objContext.NsName(), logger, "not deleting pool %q: cannot verify it is unused by other realms. %v", rootPool, err)
+		return false
+	}
+
+	inUseBy := []string{}
+	for _, namespace := range namespaces {
+		if namespace == objContext.RootPoolNamespace {
+			continue
+		}
+		if namespace == "" {
+			namespace = "<default>"
+		}
+		inUseBy = append(inUseBy, namespace)
+	}
+	if len(inUseBy) > 0 {
+		log.NamedInfo(objContext.NsName(), logger, "not deleting pool %q: rados namespaces %v still hold rgw topology records that are not visible to this store's realm list", rootPool, inUseBy)
+		return false
+	}
+	return true
 }
 
 // CheckRealmNotInSharedRoot fails when a realm configured for an isolated root pool already has

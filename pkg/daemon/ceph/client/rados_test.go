@@ -29,6 +29,57 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestRadosNamespacesWithObjects(t *testing.T) {
+	newTest := func(mockExec *test.MockExecutor) (*clusterd.Context, *ClusterInfo) {
+		ctx := &clusterd.Context{
+			Executor: mockExec,
+		}
+		info := &ClusterInfo{
+			Context: context.Background(),
+		}
+		return ctx, info
+	}
+
+	t.Run("namespaces are deduplicated and sorted, default namespace is empty string", func(t *testing.T) {
+		me := &test.MockExecutor{
+			MockExecuteCommandWithTimeout: func(timeout time.Duration, command string, arg ...string) (string, error) {
+				assert.Equal(t, arg[0], "--pool")
+				assert.Equal(t, arg[1], "mypool")
+				assert.Equal(t, arg[2], "--all")
+				assert.Equal(t, arg[3], "ls")
+				return "\tdefault.realm.1\nstore-a\trealms.abc\n\tperiods.5.1\nstore-a\tperiods.9.1\naaa\trealms.def\n", nil
+			},
+		}
+		c, i := newTest(me)
+		namespaces, err := RadosNamespacesWithObjects(c, i, "mypool")
+		assert.NoError(t, err)
+		assert.Equal(t, []string{"", "aaa", "store-a"}, namespaces)
+	})
+
+	t.Run("empty pool has no namespaces", func(t *testing.T) {
+		me := &test.MockExecutor{
+			MockExecuteCommandWithTimeout: func(timeout time.Duration, command string, arg ...string) (string, error) {
+				return "", nil
+			},
+		}
+		c, i := newTest(me)
+		namespaces, err := RadosNamespacesWithObjects(c, i, "mypool")
+		assert.NoError(t, err)
+		assert.Empty(t, namespaces)
+	})
+
+	t.Run("ls err is an error", func(t *testing.T) {
+		me := &test.MockExecutor{
+			MockExecuteCommandWithTimeout: func(timeout time.Duration, command string, arg ...string) (string, error) {
+				return "", errors.New("induced ls error")
+			},
+		}
+		c, i := newTest(me)
+		_, err := RadosNamespacesWithObjects(c, i, "mypool")
+		assert.Error(t, err)
+	})
+}
+
 func TestRadosRemoveObject(t *testing.T) {
 	newTest := func(mockExec *test.MockExecutor) (*clusterd.Context, *ClusterInfo) {
 		ctx := &clusterd.Context{

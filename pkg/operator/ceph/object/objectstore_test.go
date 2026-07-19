@@ -396,11 +396,22 @@ func TestConfigureStoreWithSharedPools(t *testing.T) {
 }
 
 func TestDeleteStore(t *testing.T) {
-	deleteStore(t, "myobj", `"mystore","myobj"`, false)
-	deleteStore(t, "myobj", `"myobj"`, true)
+	// another store shares the root pool: not the last store, .rgw.root stays
+	deleteStore(t, "myobj", `"mystore","myobj"`, "", "", false)
+	// last store, only default-namespace residue left in .rgw.root: delete it
+	deleteStore(t, "myobj", `"myobj"`, "\tdefault.realm.1\n\tperiods.5.1", "", true)
+	// regression: `realm list` is scoped to the caller's root-pool namespace and cannot see
+	// isolated realms (spec isolatedRootPool), so the last shared-root store must not delete
+	// .rgw.root while other rados namespaces still hold topology records
+	deleteStore(t, "myobj", `"myobj"`, "\tperiods.5.1\nstore-a\trealms.abc", "", false)
+	// an isolated store's realm list only ever sees itself; records in the default namespace
+	// (or any other namespace) must keep .rgw.root alive
+	deleteStore(t, "myobj", `"myobj"`, "\trealms.other\nmyobj\tperiods.5.1", "myobj", false)
+	// isolated store that really is the last user: only its own namespace remains
+	deleteStore(t, "myobj", `"myobj"`, "myobj\tperiods.5.1", "myobj", true)
 }
 
-func deleteStore(t *testing.T, name string, existingStores string, expectedDeleteRootPool bool) {
+func deleteStore(t *testing.T, name string, existingStores string, radosLsAllOutput string, rootPoolNamespace string, expectedDeleteRootPool bool) {
 	realmDeleted := false
 	zoneDeleted := false
 	zoneGroupDeleted := false
@@ -410,6 +421,10 @@ func deleteStore(t *testing.T, name string, existingStores string, expectedDelet
 	deletedRootPool := false
 	deletedErasureCodeProfile := false
 	mockExecutorFuncOutput := func(command string, args ...string) (string, error) {
+		if command == "rados" && args[2] == "--all" && args[3] == "ls" {
+			assert.Equal(t, rootPool, args[1])
+			return radosLsAllOutput, nil
+		}
 		if args[0] == "osd" {
 			if args[1] == "pool" {
 				if args[2] == "get" {
@@ -482,7 +497,7 @@ func deleteStore(t *testing.T, name string, existingStores string, expectedDelet
 	executor.MockExecuteCommandWithTimeout = executorFuncWithTimeout
 	executor.MockExecuteCommandWithOutput = executorFunc
 	executor.MockExecuteCommandWithCombinedOutput = executorFunc
-	context := &Context{Context: &clusterd.Context{Executor: executor}, Name: "myobj", clusterInfo: client.AdminTestClusterInfo("mycluster")}
+	context := &Context{Context: &clusterd.Context{Executor: executor}, Name: "myobj", RootPoolNamespace: rootPoolNamespace, clusterInfo: client.AdminTestClusterInfo("mycluster")}
 
 	// Delete an object store without deleting the pools
 	spec := cephv1.ObjectStoreSpec{}

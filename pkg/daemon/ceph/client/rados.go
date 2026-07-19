@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -189,6 +190,38 @@ func RadosNamespaceHasObjects(context *clusterd.Context, clusterInfo *ClusterInf
 		return false, errors.Wrapf(err, "failed to check for objects in rados://%s/%s", pool, namespace)
 	}
 	return len(output) > 0, nil
+}
+
+// RadosNamespacesWithObjects returns the distinct RADOS namespaces of the given pool that hold
+// at least one object, sorted; the default namespace is returned as an empty string. It relies
+// on `rados ls --all` printing one `<namespace>\t<object>` line per object, with an empty
+// namespace column for objects in the default namespace.
+func RadosNamespacesWithObjects(context *clusterd.Context, clusterInfo *ClusterInfo, pool string) ([]string, error) {
+	cmd := NewRadosCommand(context, clusterInfo, []string{
+		"--pool", pool,
+		"--all",
+		"ls",
+	})
+	output, err := cmd.RunWithTimeout(exec.CephCommandsTimeout)
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed to list objects across all rados namespaces of pool %q", pool)
+	}
+
+	found := map[string]struct{}{}
+	for _, line := range strings.Split(string(output), "\n") {
+		if line == "" {
+			continue
+		}
+		namespace, _, _ := strings.Cut(line, "\t")
+		found[namespace] = struct{}{}
+	}
+
+	namespaces := make([]string, 0, len(found))
+	for namespace := range found {
+		namespaces = append(namespaces, namespace)
+	}
+	sort.Strings(namespaces)
+	return namespaces, nil
 }
 
 // RadosRemoveObject idempotently removes a rados object from the given pool and namespace.

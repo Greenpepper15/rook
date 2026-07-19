@@ -703,7 +703,10 @@ func getObjectStores(context *Context) ([]string, error) {
 
 func DeletePools(ctx *Context, lastStore bool, poolPrefix string) error {
 	pools := append(metadataPools, dataPoolName)
-	if lastStore {
+	// lastStore is computed from a `realm list` scoped to this store's root-pool namespace, which
+	// cannot see realms living in other `.rgw.root` namespaces (spec isolatedRootPool), so
+	// re-check against the whole pool before destroying it and every namespace it contains
+	if lastStore && canDeleteRootPool(ctx) {
 		pools = append(pools, rootPool)
 	}
 
