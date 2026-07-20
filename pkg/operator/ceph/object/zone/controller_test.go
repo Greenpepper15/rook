@@ -591,4 +591,53 @@ func TestReconcileZoneDeletionWithMissingRealm(t *testing.T) {
 		// The finalizer must survive so the zone cannot vanish under the dependent store.
 		assert.ElementsMatch(t, []string{"cephobjectzone.ceph.rook.io", ".ceph.rook.io"}, remaining.Finalizers)
 	})
+
+	// The annotation lives on a user-mutable CR and its value is spliced into radosgw-admin
+	// arguments where `:` changes Ceph's pool[:namespace] parsing — a tampered value must stop
+	// the deletion with an actionable error, not run cleanup against a mangled location.
+	t.Run("tampered annotation fails the deletion closed", func(t *testing.T) {
+		res, calls, remaining, err := run(t, map[string]string{rootPoolNamespaceAnnotation: "evil:pool"}, zoneGroupGetJSON, nil)
+		// ReportReconcileResult consumes the validation error into a ReconcileFailed Warning
+		// event plus this requeue result, so the reconcile error itself is nil by convention.
+		assert.NoError(t, err)
+		assert.Equal(t, waitForRequeueIfObjectZoneGroupNotReady, res)
+		assert.Empty(t, calls, "no radosgw-admin command may run with an invalid root pool namespace")
+		// The finalizer must survive so the zone is not released half-cleaned.
+		assert.ElementsMatch(t, []string{"cephobjectzone.ceph.rook.io", ".ceph.rook.io"}, remaining.Finalizers)
+	})
+}
+
+// TestPersistRootPoolNamespace covers the annotation write policy: isolated zones are stamped
+// before any Ceph-side work, zones on the shared root are left untouched (an absent annotation
+// already means the shared root to the deletion fallback, and stamping every pre-existing zone
+// would churn user-owned metadata).
+func TestPersistRootPoolNamespace(t *testing.T) {
+	ctx := context.TODO()
+	s := scheme.Scheme
+	s.AddKnownTypes(cephv1.SchemeGroupVersion, &cephv1.CephObjectZone{})
+
+	zone := &cephv1.CephObjectZone{
+		ObjectMeta: metav1.ObjectMeta{Name: "zone-a", Namespace: "rook-ceph"},
+		TypeMeta:   metav1.TypeMeta{Kind: "CephObjectZone"},
+	}
+	cl := fake.NewClientBuilder().WithScheme(s).WithRuntimeObjects(zone).Build()
+	r := &ReconcileObjectZone{client: cl, scheme: s, opManagerContext: ctx}
+	nsName := types.NamespacedName{Name: "zone-a", Namespace: "rook-ceph"}
+
+	// shared-root zone: no annotation written
+	assert.NoError(t, r.persistRootPoolNamespace(zone, ""))
+	fetched := &cephv1.CephObjectZone{}
+	assert.NoError(t, cl.Get(ctx, nsName, fetched))
+	_, ok := fetched.Annotations[rootPoolNamespaceAnnotation]
+	assert.False(t, ok, "zones using the shared root must not be stamped")
+
+	// isolated zone: annotation recorded
+	assert.NoError(t, r.persistRootPoolNamespace(zone, "realm-a"))
+	assert.NoError(t, cl.Get(ctx, nsName, fetched))
+	assert.Equal(t, "realm-a", fetched.Annotations[rootPoolNamespaceAnnotation])
+
+	// unchanged value: idempotent
+	assert.NoError(t, r.persistRootPoolNamespace(zone, "realm-a"))
+	assert.NoError(t, cl.Get(ctx, nsName, fetched))
+	assert.Equal(t, "realm-a", fetched.Annotations[rootPoolNamespaceAnnotation])
 }

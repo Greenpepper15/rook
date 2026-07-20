@@ -49,6 +49,7 @@ import (
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -58,7 +59,9 @@ const (
 	// rootPoolNamespaceAnnotation records the resolved `.rgw.root` RADOS namespace (from the
 	// CephObjectRealm's isolatedRootPool) on the CephObjectZone, so that deletion can target the
 	// right root pool view after the realm CR — which carries no finalizer — is already gone.
-	rootPoolNamespaceAnnotation = "object.rook.io/root-pool-namespace"
+	// Only zones with a non-empty namespace carry it; the value is a realm name and is validated
+	// as such before use.
+	rootPoolNamespaceAnnotation = "ceph.rook.io/root-pool-namespace"
 )
 
 type domainRootType struct {
@@ -234,12 +237,19 @@ func (r *ReconcileObjectZone) reconcile(request reconcile.Request) (reconcile.Re
 			// the shared root, an isolated zone's cleanup would fail forever or, on a name
 			// collision, operate on another tenant's zone.
 			if recorded, ok := cephObjectZone.Annotations[rootPoolNamespaceAnnotation]; ok {
+				// the annotation lives on a user-mutable CR and its value is spliced into the
+				// radosgw-admin root pool arguments, where characters like `:` change Ceph's
+				// pool[:namespace] parsing; a legitimate value is a realm name, so require one
+				if errs := validation.IsDNS1123Subdomain(recorded); len(errs) > 0 {
+					return waitForRequeueIfObjectZoneGroupNotReady, *cephObjectZone,
+						errors.Errorf("annotation %q on CephObjectZone %q has value %q, which is not a realm name (%s): fix or remove the annotation to let the deletion proceed", rootPoolNamespaceAnnotation, cephObjectZone.Name, recorded, strings.Join(errs, "; "))
+				}
 				rootPoolNamespace = recorded
 			} else {
-				// The annotation is written before any Ceph-side work, so a zone without it either
-				// predates isolatedRootPool or never created Ceph records: the shared root is the
-				// only place its records can be.
-				log.NamedWarning(request.NamespacedName, logger, "realm CR %q not found during zone deletion and the zone has no recorded root pool namespace; assuming the shared .rgw.root", realmName)
+				// For isolated zones the annotation is written before any Ceph-side work, so a
+				// zone without it uses the shared root pool, predates isolatedRootPool, or never
+				// created Ceph records: the shared root is the only place its records can be.
+				log.NamedInfo(request.NamespacedName, logger, "realm CR %q not found during zone deletion and the zone has no recorded root pool namespace; using the shared .rgw.root", realmName)
 			}
 		} else if kerrors.IsNotFound(err) {
 			return waitForRequeueIfObjectZoneGroupNotReady, *cephObjectZone, errors.Wrapf(err, "realm %q not found", realmName)
@@ -427,9 +437,16 @@ func (r *ReconcileObjectZone) getCephObjectZoneGroup(zone *cephv1.CephObjectZone
 }
 
 // persistRootPoolNamespace records the resolved root pool namespace on the zone CR. It must run
-// before any Ceph-side work so that a zone with Ceph records always carries the annotation.
+// before any Ceph-side work so that an isolated zone with Ceph records always carries the
+// annotation. Zones using the shared root are left untouched: to the deletion fallback an absent
+// annotation already means the shared root, and stamping every pre-existing zone would churn
+// user-owned metadata for no information.
 func (r *ReconcileObjectZone) persistRootPoolNamespace(zone *cephv1.CephObjectZone, rootPoolNamespace string) error {
-	if recorded, ok := zone.Annotations[rootPoolNamespaceAnnotation]; ok && recorded == rootPoolNamespace {
+	recorded, ok := zone.Annotations[rootPoolNamespaceAnnotation]
+	if ok && recorded == rootPoolNamespace {
+		return nil
+	}
+	if !ok && rootPoolNamespace == "" {
 		return nil
 	}
 	original := zone.DeepCopy()
